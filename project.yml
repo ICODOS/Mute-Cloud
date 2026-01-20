@@ -1,0 +1,102 @@
+# TinyDictate Xcode Project Configuration
+# Generate with: xcodegen generate
+# Install XcodeGen: brew install xcodegen
+
+name: TinyDictate
+options:
+  bundleIdPrefix: com.tinydictate
+  deploymentTarget:
+    macOS: "13.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+  groupSortPosition: top
+  developmentLanguage: en
+
+settings:
+  base:
+    PRODUCT_NAME: TinyDictate
+    PRODUCT_BUNDLE_IDENTIFIER: com.tinydictate.app
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    INFOPLIST_FILE: TinyDictate/Info.plist
+    CODE_SIGN_ENTITLEMENTS: TinyDictate/TinyDictate.entitlements
+    ENABLE_HARDENED_RUNTIME: YES
+    COMBINE_HIDPI_IMAGES: YES
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
+    ARCHS: arm64
+    # Code signing - set to automatic or your team ID
+    CODE_SIGN_STYLE: Automatic
+    # DEVELOPMENT_TEAM: YOUR_TEAM_ID
+  configs:
+    Debug:
+      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      GCC_PREPROCESSOR_DEFINITIONS: "DEBUG=1"
+      COPY_PHASE_STRIP: NO
+    Release:
+      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+      SWIFT_COMPILATION_MODE: wholemodule
+      COPY_PHASE_STRIP: YES
+      ENABLE_NS_ASSERTIONS: NO
+
+targets:
+  TinyDictate:
+    type: application
+    platform: macOS
+    sources:
+      - path: TinyDictate
+        excludes:
+          - "**/*.entitlements"
+          - "**/Info.plist"
+    settings:
+      base:
+        PRODUCT_NAME: TinyDictate
+        PRODUCT_BUNDLE_IDENTIFIER: com.tinydictate.app
+        INFOPLIST_FILE: TinyDictate/Info.plist
+        CODE_SIGN_ENTITLEMENTS: TinyDictate/TinyDictate.entitlements
+        LD_RUNPATH_SEARCH_PATHS: 
+          - "@executable_path/../Frameworks"
+    preBuildScripts:
+      - name: "Verify Backend Files"
+        script: |
+          if [ ! -f "${SRCROOT}/backend/main.py" ]; then
+            echo "warning: Backend Python files not found. Run setup_backend.sh first."
+          fi
+        showEnvVars: false
+    postBuildScripts:
+      - name: "Copy Backend Files"
+        script: |
+          # Copy backend Python files to app bundle Resources
+          BACKEND_SRC="${SRCROOT}/backend"
+          BACKEND_DST="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources/backend"
+          
+          if [ -d "${BACKEND_SRC}" ]; then
+            mkdir -p "${BACKEND_DST}"
+            cp -R "${BACKEND_SRC}/"* "${BACKEND_DST}/"
+            echo "Backend files copied to ${BACKEND_DST}"
+          else
+            echo "warning: Backend source directory not found: ${BACKEND_SRC}"
+          fi
+        showEnvVars: false
+        basedOnDependencyAnalysis: false
+
+schemes:
+  TinyDictate:
+    build:
+      targets:
+        TinyDictate: all
+    run:
+      config: Debug
+      commandLineArguments:
+        "--developer-mode": true
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

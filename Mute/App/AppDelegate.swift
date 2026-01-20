@@ -1,0 +1,657 @@
+// AppDelegate.swift
+// Mute
+
+import AppKit
+import SwiftUI
+import Carbon.HIToolbox
+
+@MainActor
+class AppDelegate: NSObject, NSApplicationDelegate {
+    private var overlayPanel: OverlayPanel?
+    private var statusItem: NSStatusItem?
+    private var globalEventMonitor: Any?
+    private var localEventMonitor: Any?
+    private var stopGlobalEventMonitor: Any?
+    private var stopLocalEventMonitor: Any?
+    private var lastModifierState: NSEvent.ModifierFlags = []
+    private var settingsWindow: NSWindow?
+    
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Show app in Dock (regular app, not menu-bar-only)
+        NSApp.setActivationPolicy(.regular)
+
+        // Setup global hotkeys
+        setupHotkey()
+        setupStopHotkey()
+
+        // Setup overlay panel
+        setupOverlayPanel()
+
+        // Start backend manager
+        Task {
+            await AppState.shared.backendManager.start()
+        }
+
+        // Request microphone permission early
+        Task {
+            await AppState.shared.permissionManager.requestMicrophonePermission()
+        }
+
+        // Activate app and bring to front
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+
+        // Listen for hotkey changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hotkeyDidChange),
+            name: .hotkeyDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(stopHotkeyDidChange),
+            name: .stopHotkeyDidChange,
+            object: nil
+        )
+    }
+    
+    func applicationWillTerminate(_ notification: Notification) {
+        // Stop backend process
+        AppState.shared.backendManager.stop()
+        
+        // Clean up overlay
+        overlayPanel?.close()
+        
+        // Remove event monitors
+        removeEventMonitors()
+    }
+    
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // Don't quit when window is closed - keep running in menu bar
+        return false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        Logger.shared.log("Dock icon clicked, hasVisibleWindows: \(flag)")
+        showMainWindow()
+        return true
+    }
+
+    // Also handle when app is activated (clicked in Dock)
+    func applicationDidBecomeActive(_ notification: Notification) {
+        let visibleWindows = NSApp.windows.filter {
+            $0.isVisible && $0.level == .normal && !$0.className.contains("MenuBarExtra")
+        }
+        if visibleWindows.isEmpty {
+            showMainWindow()
+        }
+    }
+
+    func showMainWindow() {
+        if let existingWindow = NSApp.windows.first(where: { $0.title == "Mute App" && $0.isVisible }) {
+            existingWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        createWindowManually()
+    }
+
+    private func createWindowManually() {
+        let mainView = MainAppView()
+            .environmentObject(AppState.shared)
+
+        let hostingController = NSHostingController(rootView: mainView)
+
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "Mute App"
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.setContentSize(NSSize(width: 320, height: 480))
+        window.center()
+        window.isReleasedWhenClosed = false
+
+        settingsWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        Logger.shared.log("Main app window opened")
+    }
+    
+    @objc private func hotkeyDidChange() {
+        // Re-setup hotkey when it changes
+        removeEventMonitors()
+        setupHotkey()
+    }
+
+    @objc private func stopHotkeyDidChange() {
+        // Re-setup stop hotkey when it changes
+        removeStopEventMonitors()
+        setupStopHotkey()
+    }
+    
+    private func removeEventMonitors() {
+        if let monitor = globalEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalEventMonitor = nil
+        }
+        if let monitor = localEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            localEventMonitor = nil
+        }
+    }
+
+    private func removeStopEventMonitors() {
+        if let monitor = stopGlobalEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            stopGlobalEventMonitor = nil
+        }
+        if let monitor = stopLocalEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            stopLocalEventMonitor = nil
+        }
+    }
+    
+    private func setupHotkey() {
+        let config = HotkeyConfig.load()
+        
+        if config.isModifierOnly {
+            // For modifier-only hotkeys, monitor flagsChanged events
+            globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                self?.checkModifierHotkey(event: event, config: config)
+            }
+            localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                if self?.checkModifierHotkey(event: event, config: config) == true {
+                    return nil
+                }
+                return event
+            }
+        } else {
+            // For regular keys, monitor keyDown events
+            globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.checkHotkey(event: event, config: config)
+            }
+            localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                if self?.checkHotkey(event: event, config: config) == true {
+                    return nil
+                }
+                return event
+            }
+        }
+        
+        Logger.shared.log("Hotkey configured: \(config.displayString)")
+    }
+
+    private func setupStopHotkey() {
+        let config = StopHotkeyConfig.load()
+
+        // Stop hotkey only monitors keyDown (Escape and similar keys)
+        stopGlobalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.checkStopHotkey(event: event, config: config)
+        }
+        stopLocalEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if self?.checkStopHotkey(event: event, config: config) == true {
+                return nil
+            }
+            return event
+        }
+
+        Logger.shared.log("Stop hotkey configured: \(config.displayString)")
+    }
+
+    @discardableResult
+    private func checkStopHotkey(event: NSEvent, config: StopHotkeyConfig) -> Bool {
+        // Only trigger if currently recording
+        guard AppState.shared.recordingState == .recording else { return false }
+
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        // Check if key matches
+        guard event.keyCode == config.keyCode else { return false }
+
+        // Check modifiers
+        let hasCommand = modifiers.contains(.command)
+        let hasOption = modifiers.contains(.option)
+        let hasControl = modifiers.contains(.control)
+        let hasShift = modifiers.contains(.shift)
+
+        guard hasCommand == config.command,
+              hasOption == config.option,
+              hasControl == config.control,
+              hasShift == config.shift else {
+            return false
+        }
+
+        // Stop hotkey matched!
+        handleStopHotkeyPressed()
+        return true
+    }
+
+    private func handleStopHotkeyPressed() {
+        Task { @MainActor in
+            let state = AppState.shared
+
+            // Don't interfere with Capture to Notes mode
+            if state.isCaptureMode {
+                Logger.shared.log("Stop hotkey pressed during Capture to Notes mode - ignoring")
+                return
+            }
+
+            if state.recordingState == .recording {
+                Logger.shared.log("Stop hotkey pressed - cancelling recording")
+                state.cancelRecording()
+            }
+        }
+    }
+
+    @discardableResult
+    private func checkModifierHotkey(event: NSEvent, config: HotkeyConfig) -> Bool {
+        let keyCode = event.keyCode
+        let currentFlags = event.modifierFlags
+        
+        // Check if this is the modifier key we're looking for being pressed (not released)
+        guard keyCode == config.keyCode else { return false }
+        
+        // Detect key down (modifier added) vs key up (modifier removed)
+        let isKeyDown: Bool
+        switch keyCode {
+        case UInt16(kVK_Shift), UInt16(kVK_RightShift):
+            isKeyDown = currentFlags.contains(.shift) && !lastModifierState.contains(.shift)
+        case UInt16(kVK_Command), UInt16(kVK_RightCommand):
+            isKeyDown = currentFlags.contains(.command) && !lastModifierState.contains(.command)
+        case UInt16(kVK_Option), UInt16(kVK_RightOption):
+            isKeyDown = currentFlags.contains(.option) && !lastModifierState.contains(.option)
+        case UInt16(kVK_Control), UInt16(kVK_RightControl):
+            isKeyDown = currentFlags.contains(.control) && !lastModifierState.contains(.control)
+        case UInt16(kVK_Function):
+            isKeyDown = currentFlags.contains(.function) && !lastModifierState.contains(.function)
+        case UInt16(kVK_CapsLock):
+            isKeyDown = currentFlags.contains(.capsLock) && !lastModifierState.contains(.capsLock)
+        default:
+            isKeyDown = false
+        }
+        
+        lastModifierState = currentFlags
+        
+        if isKeyDown {
+            handleHotkeyPressed()
+            return true
+        }
+        
+        return false
+    }
+    
+    @discardableResult
+    private func checkHotkey(event: NSEvent, config: HotkeyConfig) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        
+        // Check if key matches
+        guard event.keyCode == config.keyCode else { return false }
+        
+        // Check modifiers
+        let hasCommand = modifiers.contains(.command)
+        let hasOption = modifiers.contains(.option)
+        let hasControl = modifiers.contains(.control)
+        let hasShift = modifiers.contains(.shift)
+        
+        guard hasCommand == config.command,
+              hasOption == config.option,
+              hasControl == config.control,
+              hasShift == config.shift else {
+            return false
+        }
+        
+        // Hotkey matched!
+        handleHotkeyPressed()
+        return true
+    }
+    
+    private func handleHotkeyPressed() {
+        Task { @MainActor in
+            let state = AppState.shared
+
+            // Don't interfere with Capture to Notes mode
+            if state.isCaptureMode {
+                Logger.shared.log("Hotkey pressed during Capture to Notes mode - ignoring")
+                return
+            }
+
+            switch state.recordingState {
+            case .idle:
+                await state.startRecording()
+            case .recording:
+                await state.stopRecording()
+            case .processing:
+                // Ignore during processing
+                Logger.shared.log("Hotkey pressed during processing - ignoring")
+            case .done, .error:
+                // Can start new recording
+                await state.startRecording()
+            }
+        }
+    }
+    
+    private func setupOverlayPanel() {
+        overlayPanel = OverlayPanel()
+        AppState.shared.overlayPanel = overlayPanel
+    }
+}
+
+// MARK: - Hotkey Configuration
+struct HotkeyConfig: Codable {
+    var keyCode: UInt16
+    var command: Bool
+    var option: Bool
+    var control: Bool
+    var shift: Bool
+    var isModifierOnly: Bool  // True if hotkey is just a modifier key (e.g., right shift)
+    
+    static let defaultConfig = HotkeyConfig(
+        keyCode: UInt16(kVK_F5),  // F5 key
+        command: false,
+        option: false,
+        control: false,
+        shift: false,
+        isModifierOnly: false
+    )
+    
+    static func load() -> HotkeyConfig {
+        if let data = UserDefaults.standard.data(forKey: "hotkeyConfig"),
+           let config = try? JSONDecoder().decode(HotkeyConfig.self, from: data) {
+            return config
+        }
+        return defaultConfig
+    }
+    
+    func save() {
+        if let data = try? JSONEncoder().encode(self) {
+            UserDefaults.standard.set(data, forKey: "hotkeyConfig")
+            NotificationCenter.default.post(name: .hotkeyDidChange, object: nil)
+        }
+    }
+    
+    var displayString: String {
+        if isModifierOnly {
+            return modifierKeyName
+        }
+        
+        var parts: [String] = []
+        if control { parts.append("⌃") }
+        if option { parts.append("⌥") }
+        if shift { parts.append("⇧") }
+        if command { parts.append("⌘") }
+        parts.append(keyName)
+        return parts.joined()
+    }
+    
+    private var modifierKeyName: String {
+        switch keyCode {
+        case UInt16(kVK_RightShift): return "Right ⇧"
+        case UInt16(kVK_Shift): return "Left ⇧"
+        case UInt16(kVK_RightCommand): return "Right ⌘"
+        case UInt16(kVK_Command): return "Left ⌘"
+        case UInt16(kVK_RightOption): return "Right ⌥"
+        case UInt16(kVK_Option): return "Left ⌥"
+        case UInt16(kVK_RightControl): return "Right ⌃"
+        case UInt16(kVK_Control): return "Left ⌃"
+        case UInt16(kVK_Function): return "Fn"
+        case UInt16(kVK_CapsLock): return "⇪ Caps"
+        default: return "Modifier"
+        }
+    }
+    
+    var keyName: String {
+        let keyNames: [UInt16: String] = [
+            UInt16(kVK_F1): "F1", UInt16(kVK_F2): "F2", UInt16(kVK_F3): "F3",
+            UInt16(kVK_F4): "F4", UInt16(kVK_F5): "F5", UInt16(kVK_F6): "F6",
+            UInt16(kVK_F7): "F7", UInt16(kVK_F8): "F8", UInt16(kVK_F9): "F9",
+            UInt16(kVK_F10): "F10", UInt16(kVK_F11): "F11", UInt16(kVK_F12): "F12",
+            UInt16(kVK_F13): "F13", UInt16(kVK_F14): "F14", UInt16(kVK_F15): "F15",
+            UInt16(kVK_F16): "F16", UInt16(kVK_F17): "F17", UInt16(kVK_F18): "F18",
+            UInt16(kVK_F19): "F19", UInt16(kVK_F20): "F20",
+            UInt16(kVK_Space): "Space", UInt16(kVK_Return): "Return",
+            UInt16(kVK_Tab): "Tab", UInt16(kVK_Delete): "Delete",
+            UInt16(kVK_ForwardDelete): "Fwd Del",
+            UInt16(kVK_Escape): "Esc", UInt16(kVK_Home): "Home",
+            UInt16(kVK_End): "End", UInt16(kVK_PageUp): "PgUp",
+            UInt16(kVK_PageDown): "PgDn",
+            UInt16(kVK_LeftArrow): "←", UInt16(kVK_RightArrow): "→",
+            UInt16(kVK_UpArrow): "↑", UInt16(kVK_DownArrow): "↓",
+            // Letters
+            UInt16(kVK_ANSI_A): "A", UInt16(kVK_ANSI_B): "B", UInt16(kVK_ANSI_C): "C",
+            UInt16(kVK_ANSI_D): "D", UInt16(kVK_ANSI_E): "E", UInt16(kVK_ANSI_F): "F",
+            UInt16(kVK_ANSI_G): "G", UInt16(kVK_ANSI_H): "H", UInt16(kVK_ANSI_I): "I",
+            UInt16(kVK_ANSI_J): "J", UInt16(kVK_ANSI_K): "K", UInt16(kVK_ANSI_L): "L",
+            UInt16(kVK_ANSI_M): "M", UInt16(kVK_ANSI_N): "N", UInt16(kVK_ANSI_O): "O",
+            UInt16(kVK_ANSI_P): "P", UInt16(kVK_ANSI_Q): "Q", UInt16(kVK_ANSI_R): "R",
+            UInt16(kVK_ANSI_S): "S", UInt16(kVK_ANSI_T): "T", UInt16(kVK_ANSI_U): "U",
+            UInt16(kVK_ANSI_V): "V", UInt16(kVK_ANSI_W): "W", UInt16(kVK_ANSI_X): "X",
+            UInt16(kVK_ANSI_Y): "Y", UInt16(kVK_ANSI_Z): "Z",
+            // Numbers
+            UInt16(kVK_ANSI_0): "0", UInt16(kVK_ANSI_1): "1", UInt16(kVK_ANSI_2): "2",
+            UInt16(kVK_ANSI_3): "3", UInt16(kVK_ANSI_4): "4", UInt16(kVK_ANSI_5): "5",
+            UInt16(kVK_ANSI_6): "6", UInt16(kVK_ANSI_7): "7", UInt16(kVK_ANSI_8): "8",
+            UInt16(kVK_ANSI_9): "9",
+            // Punctuation
+            UInt16(kVK_ANSI_Minus): "-", UInt16(kVK_ANSI_Equal): "=",
+            UInt16(kVK_ANSI_LeftBracket): "[", UInt16(kVK_ANSI_RightBracket): "]",
+            UInt16(kVK_ANSI_Semicolon): ";", UInt16(kVK_ANSI_Quote): "'",
+            UInt16(kVK_ANSI_Comma): ",", UInt16(kVK_ANSI_Period): ".",
+            UInt16(kVK_ANSI_Slash): "/", UInt16(kVK_ANSI_Backslash): "\\",
+            UInt16(kVK_ANSI_Grave): "`",
+        ]
+        return keyNames[keyCode] ?? "Key \(keyCode)"
+    }
+}
+
+extension Notification.Name {
+    static let hotkeyDidChange = Notification.Name("hotkeyDidChange")
+    static let stopHotkeyDidChange = Notification.Name("stopHotkeyDidChange")
+}
+
+// MARK: - Stop Hotkey Configuration
+struct StopHotkeyConfig: Codable {
+    var keyCode: UInt16
+    var command: Bool
+    var option: Bool
+    var control: Bool
+    var shift: Bool
+
+    static let defaultConfig = StopHotkeyConfig(
+        keyCode: UInt16(kVK_Escape),  // Escape key
+        command: false,
+        option: false,
+        control: false,
+        shift: false
+    )
+
+    static func load() -> StopHotkeyConfig {
+        if let data = UserDefaults.standard.data(forKey: "stopHotkeyConfig"),
+           let config = try? JSONDecoder().decode(StopHotkeyConfig.self, from: data) {
+            return config
+        }
+        return defaultConfig
+    }
+
+    func save() {
+        if let data = try? JSONEncoder().encode(self) {
+            UserDefaults.standard.set(data, forKey: "stopHotkeyConfig")
+            NotificationCenter.default.post(name: .stopHotkeyDidChange, object: nil)
+        }
+    }
+
+    var displayString: String {
+        var parts: [String] = []
+        if control { parts.append("⌃") }
+        if option { parts.append("⌥") }
+        if shift { parts.append("⇧") }
+        if command { parts.append("⌘") }
+        parts.append(keyName)
+        return parts.joined()
+    }
+
+    var keyName: String {
+        let keyNames: [UInt16: String] = [
+            UInt16(kVK_F1): "F1", UInt16(kVK_F2): "F2", UInt16(kVK_F3): "F3",
+            UInt16(kVK_F4): "F4", UInt16(kVK_F5): "F5", UInt16(kVK_F6): "F6",
+            UInt16(kVK_F7): "F7", UInt16(kVK_F8): "F8", UInt16(kVK_F9): "F9",
+            UInt16(kVK_F10): "F10", UInt16(kVK_F11): "F11", UInt16(kVK_F12): "F12",
+            UInt16(kVK_Space): "Space", UInt16(kVK_Return): "Return",
+            UInt16(kVK_Tab): "Tab", UInt16(kVK_Delete): "Delete",
+            UInt16(kVK_Escape): "Esc", UInt16(kVK_Home): "Home",
+            UInt16(kVK_End): "End", UInt16(kVK_PageUp): "PgUp",
+            UInt16(kVK_PageDown): "PgDn",
+            UInt16(kVK_LeftArrow): "←", UInt16(kVK_RightArrow): "→",
+            UInt16(kVK_UpArrow): "↑", UInt16(kVK_DownArrow): "↓",
+            UInt16(kVK_ANSI_A): "A", UInt16(kVK_ANSI_B): "B", UInt16(kVK_ANSI_C): "C",
+            UInt16(kVK_ANSI_D): "D", UInt16(kVK_ANSI_E): "E", UInt16(kVK_ANSI_F): "F",
+            UInt16(kVK_ANSI_G): "G", UInt16(kVK_ANSI_H): "H", UInt16(kVK_ANSI_I): "I",
+            UInt16(kVK_ANSI_J): "J", UInt16(kVK_ANSI_K): "K", UInt16(kVK_ANSI_L): "L",
+            UInt16(kVK_ANSI_M): "M", UInt16(kVK_ANSI_N): "N", UInt16(kVK_ANSI_O): "O",
+            UInt16(kVK_ANSI_P): "P", UInt16(kVK_ANSI_Q): "Q", UInt16(kVK_ANSI_R): "R",
+            UInt16(kVK_ANSI_S): "S", UInt16(kVK_ANSI_T): "T", UInt16(kVK_ANSI_U): "U",
+            UInt16(kVK_ANSI_V): "V", UInt16(kVK_ANSI_W): "W", UInt16(kVK_ANSI_X): "X",
+            UInt16(kVK_ANSI_Y): "Y", UInt16(kVK_ANSI_Z): "Z",
+            UInt16(kVK_ANSI_0): "0", UInt16(kVK_ANSI_1): "1", UInt16(kVK_ANSI_2): "2",
+            UInt16(kVK_ANSI_3): "3", UInt16(kVK_ANSI_4): "4", UInt16(kVK_ANSI_5): "5",
+            UInt16(kVK_ANSI_6): "6", UInt16(kVK_ANSI_7): "7", UInt16(kVK_ANSI_8): "8",
+            UInt16(kVK_ANSI_9): "9",
+        ]
+        return keyNames[keyCode] ?? "Key \(keyCode)"
+    }
+}
+
+// MARK: - Logger
+class Logger {
+    static let shared = Logger()
+
+    private var logs: [LogEntry] = []
+    private let maxLogs = 1000
+    private let logFileURL: URL?
+    private let fileQueue = DispatchQueue(label: "com.mute.logger.file", qos: .utility)
+    private let maxFileSize: UInt64 = 5 * 1024 * 1024  // 5 MB
+    private let dateFormatter: DateFormatter
+
+    struct LogEntry: Identifiable {
+        let id = UUID()
+        let timestamp: Date
+        let level: LogLevel
+        let message: String
+    }
+
+    enum LogLevel: String {
+        case debug = "DEBUG"
+        case info = "INFO"
+        case warning = "WARN"
+        case error = "ERROR"
+    }
+
+    private init() {
+        // Setup date formatter
+        dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+
+        // Setup log file in Application Support
+        let fileManager = FileManager.default
+        if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let muteDir = appSupport.appendingPathComponent("Mute")
+
+            // Create directory if needed
+            try? fileManager.createDirectory(at: muteDir, withIntermediateDirectories: true)
+
+            logFileURL = muteDir.appendingPathComponent("app.log")
+
+            // Write startup marker
+            let startupMessage = "\n=== Mute App Started at \(dateFormatter.string(from: Date())) ===\n"
+            writeToFile(startupMessage)
+        } else {
+            logFileURL = nil
+        }
+    }
+
+    func log(_ message: String, level: LogLevel = .info, file: String = #file, function: String = #function, line: Int = #line) {
+        let entry = LogEntry(timestamp: Date(), level: level, message: message)
+        let fileName = URL(fileURLWithPath: file).lastPathComponent
+
+        DispatchQueue.main.async {
+            self.logs.append(entry)
+            if self.logs.count > self.maxLogs {
+                self.logs.removeFirst(self.logs.count - self.maxLogs)
+            }
+        }
+
+        // Format log line
+        let timestamp = dateFormatter.string(from: entry.timestamp)
+        let logLine = "[\(timestamp)] [\(entry.level.rawValue)] [\(fileName):\(line)] \(message)"
+
+        // Print to console for debugging
+        print(logLine)
+
+        // Write to file
+        writeToFile(logLine + "\n")
+    }
+
+    private func writeToFile(_ text: String) {
+        guard let fileURL = logFileURL else { return }
+
+        fileQueue.async {
+            // Check file size and rotate if needed
+            self.rotateLogIfNeeded()
+
+            // Append to file
+            if let data = text.data(using: .utf8) {
+                if FileManager.default.fileExists(atPath: fileURL.path) {
+                    if let fileHandle = try? FileHandle(forWritingTo: fileURL) {
+                        fileHandle.seekToEndOfFile()
+                        fileHandle.write(data)
+                        try? fileHandle.close()
+                    }
+                } else {
+                    try? data.write(to: fileURL)
+                }
+            }
+        }
+    }
+
+    private func rotateLogIfNeeded() {
+        guard let fileURL = logFileURL else { return }
+        let fileManager = FileManager.default
+
+        guard let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
+              let fileSize = attributes[.size] as? UInt64,
+              fileSize > maxFileSize else {
+            return
+        }
+
+        // Rotate: app.log -> app.log.1, app.log.1 -> app.log.2, etc.
+        let backupCount = 3
+        for i in stride(from: backupCount - 1, through: 1, by: -1) {
+            let oldPath = fileURL.deletingLastPathComponent()
+                .appendingPathComponent("app.log.\(i)")
+            let newPath = fileURL.deletingLastPathComponent()
+                .appendingPathComponent("app.log.\(i + 1)")
+            try? fileManager.removeItem(at: newPath)
+            try? fileManager.moveItem(at: oldPath, to: newPath)
+        }
+
+        // Move current log to .1
+        let backupPath = fileURL.deletingLastPathComponent()
+            .appendingPathComponent("app.log.1")
+        try? fileManager.removeItem(at: backupPath)
+        try? fileManager.moveItem(at: fileURL, to: backupPath)
+    }
+
+    func getLogs() -> [LogEntry] {
+        return logs
+    }
+
+    func clearLogs() {
+        logs.removeAll()
+    }
+
+    /// Returns the path to the log file directory
+    func getLogDirectory() -> URL? {
+        return logFileURL?.deletingLastPathComponent()
+    }
+}

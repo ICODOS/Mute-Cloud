@@ -45,7 +45,7 @@ A local, privacy-focused speech-to-text app for macOS with support for multiple 
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/DavidS031998/Mute.git
+   git clone https://github.com/ICODOS/Mute.git
    cd Mute
    ```
 

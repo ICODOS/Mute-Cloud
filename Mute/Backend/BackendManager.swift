@@ -640,11 +640,10 @@ class BackendManager: ObservableObject {
     }
     
     // MARK: - Transcription Control
-    func startTranscription(continuousMode: Bool, model: String = "parakeet", enableDiarization: Bool = false) async {
+    func startTranscription(model: String = "parakeet", enableDiarization: Bool = false) async {
         let settings: [String: Any] = [
             "type": "start",
             "settings": [
-                "continuous_mode": continuousMode,
                 "model": model,
                 "enable_diarization": enableDiarization
             ]

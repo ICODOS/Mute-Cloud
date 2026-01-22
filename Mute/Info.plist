@@ -21,9 +21,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.9.0</string>
+	<string>1.2.0</string>
 	<key>CFBundleVersion</key>
-	<string>20260120</string>
+	<string>20260122</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
@@ -33,7 +33,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © 2024-2025. All rights reserved.</string>
+	<string>Copyright © 2024-2026. All rights reserved.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Mute needs microphone access to transcribe your speech to text. Audio is processed entirely on your device and never sent to any server.</string>
 	<key>NSAppleEventsUsageDescription</key>

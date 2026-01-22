@@ -83,7 +83,6 @@ class AppState: ObservableObject {
     // MARK: - Settings
     @AppStorage("pasteOnStop") var pasteOnStop: Bool = true
     @AppStorage("showOverlay") var showOverlay: Bool = true
-    @AppStorage("pasteContinuously") var pasteContinuously: Bool = false
     @AppStorage("preserveClipboard") var preserveClipboard: Bool = false
     @AppStorage("developerMode") var developerMode: Bool = false
     @AppStorage("selectedAudioDevice") var selectedAudioDeviceUID: String = ""
@@ -103,6 +102,21 @@ class AppState: ObservableObject {
     @AppStorage("keepDictationModelReady") var keepDictationModelReady: Bool = false
     @AppStorage("keepCaptureModelReady") var keepCaptureModelReady: Bool = false
     @AppStorage("keepModelWarmDuration") var keepModelWarmDuration: String = "4h"
+
+    // MARK: - Cloud Transcription Settings
+    @AppStorage("transcriptionBackend") var transcriptionBackendRaw: String = TranscriptionBackend.local.rawValue
+
+    /// The selected transcription backend (local or cloud)
+    var transcriptionBackend: TranscriptionBackend {
+        get { TranscriptionBackend(rawValue: transcriptionBackendRaw) ?? .local }
+        set { transcriptionBackendRaw = newValue.rawValue }
+    }
+
+    /// Optional language hint for cloud transcription (e.g., "en", "de")
+    @AppStorage("cloudTranscriptionLanguage") var cloudTranscriptionLanguage: String = ""
+
+    /// Optional prompt/context for cloud transcription (spelling hints, etc.)
+    @AppStorage("cloudTranscriptionPrompt") var cloudTranscriptionPrompt: String = ""
 
     // MARK: - Usage Stats
     @AppStorage("totalDictations") var totalDictations: Int = 0
@@ -147,6 +161,11 @@ class AppState: ObservableObject {
     let textInsertionService = TextInsertionService()
     let permissionManager = PermissionManager()
     let notesIntegrationService = NotesIntegrationService()
+
+    // MARK: - Cloud Transcription
+    let groqProvider = GroqWhisperProvider.shared
+    private var cloudAudioFileManager: AudioFileManager?
+    private var cloudTranscriptionTask: Task<Void, Never>?
     
     // MARK: - Overlay
     weak var overlayPanel: OverlayPanel?
@@ -396,7 +415,27 @@ class AppState: ObservableObject {
         partialText = ""
         finalText = ""
         errorMessage = nil
-        
+
+        // Cancel any existing cloud transcription task
+        cloudTranscriptionTask?.cancel()
+        cloudTranscriptionTask = nil
+
+        // Set up cloud audio recording if using cloud backend
+        if transcriptionBackend == .groqWhisper {
+            // Validate Groq configuration
+            let validation = groqProvider.validateConfiguration()
+            if !validation.isValid {
+                Logger.shared.log("Groq configuration invalid: \(validation.errorMessage ?? "unknown")", level: .error)
+                errorMessage = validation.errorMessage
+                recordingState = .error(validation.errorMessage ?? "Groq not configured")
+                return
+            }
+            cloudAudioFileManager = AudioFileManager()
+            Logger.shared.log("Cloud transcription enabled - recording audio for Groq upload")
+        } else {
+            cloudAudioFileManager = nil
+        }
+
         // Update state to show we're preparing
         recordingState = .recording
 
@@ -429,13 +468,20 @@ class AppState: ObservableObject {
             // Capture references for the audio callback (thread-safe)
             let sendingEnabled = self.audioSendingEnabled
             let backend = self.backendManager
+            let cloudAudioManager = self.cloudAudioFileManager
+            let isCloudMode = self.transcriptionBackend == .groqWhisper
 
             // Start backend preparation FIRST (async, non-blocking)
             // This runs concurrently while we set up audio
-            Logger.shared.log("Requesting backend to prepare model: \(modelToUse)")
-            backendReadyTask = Task { [weak self] () -> Bool in
-                guard let self = self else { return false }
-                return await self.waitForRecordingReady(model: modelToUse, diarizationEnabled: diarizationEnabled)
+            // Skip for cloud transcription - we don't need local backend
+            if !isCloudMode {
+                Logger.shared.log("Requesting backend to prepare model: \(modelToUse)")
+                backendReadyTask = Task { [weak self] () -> Bool in
+                    guard let self = self else { return false }
+                    return await self.waitForRecordingReady(model: modelToUse, diarizationEnabled: diarizationEnabled)
+                }
+            } else {
+                Logger.shared.log("Cloud mode - skipping local backend preparation")
             }
 
             // Now start audio capture (this blocks waiting for Bluetooth mode switch)
@@ -444,8 +490,13 @@ class AppState: ObservableObject {
                 deviceUID: deviceUID.isEmpty ? nil : deviceUID,
                 chunkSizeMs: 400
             ) { audioData in
-                // Only send audio if backend is ready
-                guard sendingEnabled.value else { return }
+                // Save audio for cloud transcription
+                if isCloudMode {
+                    cloudAudioManager?.appendAudioData(audioData)
+                }
+
+                // Only send audio to local backend if backend is ready and not in cloud mode
+                guard !isCloudMode, sendingEnabled.value else { return }
                 Task {
                     await backend.sendAudioChunk(audioData)
                 }
@@ -453,22 +504,27 @@ class AppState: ObservableObject {
 
             Logger.shared.log("Audio capture started, checking backend status...")
 
-            // Wait for backend to be ready (with timeout)
-            // Backend preparation was running in parallel with audio setup
-            let backendReady = try await withTimeout(seconds: 30) {
-                await backendReadyTask!.value
+            // Wait for backend to be ready (with timeout) - skip for cloud mode
+            if !isCloudMode {
+                // Backend preparation was running in parallel with audio setup
+                let backendReady = try await withTimeout(seconds: 30) {
+                    await backendReadyTask!.value
+                }
+
+                guard backendReady else {
+                    throw NSError(domain: "AppState", code: 1, userInfo: [NSLocalizedDescriptionKey: "Backend did not become ready in time"])
+                }
+
+                // Now enable audio sending - backend is ready
+                audioSendingEnabled.value = true
+
+                let initTime = Date().timeIntervalSince(audioStartTime) * 1000
+                Logger.shared.log("Initialization complete in \(Int(initTime))ms - backend ready, audio flowing")
+                Logger.shared.log("Recording started with model: \(modelToUse), diarization: \(diarizationEnabled)")
+            } else {
+                let initTime = Date().timeIntervalSince(audioStartTime) * 1000
+                Logger.shared.log("Cloud recording started in \(Int(initTime))ms - audio being buffered for upload")
             }
-
-            guard backendReady else {
-                throw NSError(domain: "AppState", code: 1, userInfo: [NSLocalizedDescriptionKey: "Backend did not become ready in time"])
-            }
-
-            // Now enable audio sending - backend is ready
-            audioSendingEnabled.value = true
-
-            let initTime = Date().timeIntervalSince(audioStartTime) * 1000
-            Logger.shared.log("Initialization complete in \(Int(initTime))ms - backend ready, audio flowing")
-            Logger.shared.log("Recording started with model: \(modelToUse), continuous mode: \(pasteContinuously), diarization: \(diarizationEnabled)")
         } catch {
             Logger.shared.log("Failed to start recording: \(error)", level: .error)
 
@@ -498,7 +554,6 @@ class AppState: ObservableObject {
             // Send start command to backend
             Task {
                 await backendManager.startTranscription(
-                    continuousMode: pasteContinuously,
                     model: model,
                     enableDiarization: diarizationEnabled
                 )
@@ -542,6 +597,16 @@ class AppState: ObservableObject {
         audioSendingEnabled.value = false  // Stop sending audio immediately
         audioManager.stopCapture()
 
+        // Branch based on transcription backend
+        if transcriptionBackend == .groqWhisper {
+            await stopRecordingCloud()
+        } else {
+            await stopRecordingLocal()
+        }
+    }
+
+    /// Stop recording and send to local backend
+    private func stopRecordingLocal() async {
         // Send stop command to backend
         await backendManager.stopTranscription()
 
@@ -565,8 +630,107 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Stop recording and send to Groq cloud API
+    private func stopRecordingCloud() async {
+        Logger.shared.log("Recording stopped, starting cloud transcription...")
+
+        // Capture references for the task
+        let audioFileManager = cloudAudioFileManager
+        let language = cloudTranscriptionLanguage.isEmpty ? nil : cloudTranscriptionLanguage
+        let prompt = cloudTranscriptionPrompt.isEmpty ? nil : cloudTranscriptionPrompt
+
+        // Cancel any existing cloud transcription task
+        cloudTranscriptionTask?.cancel()
+
+        // Start cloud transcription in a task
+        cloudTranscriptionTask = Task { [weak self] in
+            guard let self = self else { return }
+
+            var tempFileURL: URL?
+
+            do {
+                // Check if we have audio data
+                guard let fileManager = audioFileManager else {
+                    throw TranscriptionError.unknown(message: "No audio data recorded")
+                }
+
+                let duration = fileManager.duration
+                Logger.shared.log(String(format: "Cloud transcription: %.1f seconds of audio recorded", duration))
+
+                // Note: Groq bills minimum 10 seconds per request
+                if duration < 10 {
+                    Logger.shared.log("Note: Groq bills minimum 10 seconds per request. Short recordings (<10s) will be billed as 10 seconds.", level: .info)
+                }
+
+                // Write audio to WAV file
+                guard let fileURL = try fileManager.writeToWAVFile() else {
+                    throw TranscriptionError.unknown(message: "No audio data to transcribe")
+                }
+                tempFileURL = fileURL
+
+                // Check for cancellation
+                try Task.checkCancellation()
+
+                // Send to Groq for transcription
+                let text = try await self.groqProvider.transcribe(
+                    audioFileURL: fileURL,
+                    language: language,
+                    prompt: prompt
+                )
+
+                // Check for cancellation before updating UI
+                try Task.checkCancellation()
+
+                // Update UI on main actor
+                await MainActor.run {
+                    self.handleFinalTranscription(text)
+                }
+
+            } catch is CancellationError {
+                Logger.shared.log("Cloud transcription cancelled", level: .info)
+                await MainActor.run {
+                    self.recordingState = .idle
+                    self.overlayPanel?.hide()
+                }
+            } catch let error as TranscriptionError {
+                Logger.shared.log("Cloud transcription error: \(error.localizedDescription)", level: .error)
+                await MainActor.run {
+                    self.handleError(error.localizedDescription)
+                }
+            } catch {
+                Logger.shared.log("Cloud transcription error: \(error)", level: .error)
+                await MainActor.run {
+                    self.handleError("Transcription failed: \(error.localizedDescription)")
+                }
+            }
+
+            // Clean up temp file
+            if let url = tempFileURL {
+                AudioFileManager.deleteTemporaryFile(url)
+            }
+
+            // Clean up cloud audio manager
+            await MainActor.run {
+                self.cloudAudioFileManager = nil
+            }
+        }
+
+        // Set timeout for cloud transcription (2 minutes for large files)
+        processingTimeoutTask?.cancel()
+        processingTimeoutTask = Task {
+            try? await Task.sleep(nanoseconds: 120_000_000_000) // 120 seconds
+            guard !Task.isCancelled else { return }
+            if recordingState == .processing {
+                Logger.shared.log("Cloud transcription timeout", level: .warning)
+                cloudTranscriptionTask?.cancel()
+                recordingState = .error("Transcription timeout - please try again")
+                overlayPanel?.show(state: .error)
+            }
+        }
+    }
+
     func cancelRecording() {
-        guard recordingState == .recording else {
+        guard recordingState == .recording || recordingState == .processing else {
             Logger.shared.log("Cannot cancel recording in state: \(recordingState)")
             return
         }
@@ -574,6 +738,11 @@ class AppState: ObservableObject {
         // Cancel any processing timeout
         processingTimeoutTask?.cancel()
         processingTimeoutTask = nil
+
+        // Cancel any cloud transcription task
+        cloudTranscriptionTask?.cancel()
+        cloudTranscriptionTask = nil
+        cloudAudioFileManager = nil
 
         // Stop audio capture without processing
         audioSendingEnabled.value = false  // Stop sending audio immediately
@@ -730,12 +899,7 @@ class AppState: ObservableObject {
     // MARK: - Transcription Handlers
     private func handlePartialTranscription(_ text: String) {
         partialText = text
-        
-        if pasteContinuously {
-            // Optionally paste partial results
-            textInsertionService.insertText(text, preserveClipboard: preserveClipboard)
-        }
-        
+
         // Update overlay with partial text if enabled
         if showOverlay && developerMode {
             overlayPanel?.updatePartialText(text)

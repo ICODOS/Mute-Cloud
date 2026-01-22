@@ -20,6 +20,10 @@
 		EAEC5D84EB5CE21AFA5D878E /* TextInsertionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA7BD892C6D61CC4E2196A1F /* TextInsertionService.swift */; };
 		F1F3F5731B230E46D9F5505E /* OverlayPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2274C4041E8A3BD11DB6A1FF /* OverlayPanel.swift */; };
 		A1B2C3D4E5F6071829304152 /* NotesIntegrationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6071829304152A1 /* NotesIntegrationService.swift */; };
+		C3D4E5F60718293041F2A1B2 /* TranscriptionProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E5F60718293041F2A1B2C3 /* TranscriptionProvider.swift */; };
+		E5F60718293041F2A1B2C3D4 /* KeychainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F60718293041F2A1B2C3D4E5 /* KeychainManager.swift */; };
+		07182930F2A1B2C3D4E5F617 /* AudioFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18293041F2A1B2C3D4E5F607 /* AudioFileManager.swift */; };
+		293041F2A1B2C3D4E5F60718 /* GroqWhisperProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3041F2A1B2C3D4E5F6071829 /* GroqWhisperProvider.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,15 +41,23 @@
 		D375F6AAA304245007DFC038 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		E689CACA09164BCC9E1DD99F /* BackendManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendManager.swift; sourceTree = "<group>"; };
 		EA7BD892C6D61CC4E2196A1F /* TextInsertionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextInsertionService.swift; sourceTree = "<group>"; };
+		D4E5F60718293041F2A1B2C3 /* TranscriptionProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionProvider.swift; sourceTree = "<group>"; };
+		F60718293041F2A1B2C3D4E5 /* KeychainManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainManager.swift; sourceTree = "<group>"; };
+		18293041F2A1B2C3D4E5F607 /* AudioFileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioFileManager.swift; sourceTree = "<group>"; };
+		3041F2A1B2C3D4E5F6071829 /* GroqWhisperProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroqWhisperProvider.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
 		074067C1F2D05DA2F3168FD3 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				18293041F2A1B2C3D4E5F607 /* AudioFileManager.swift */,
+				3041F2A1B2C3D4E5F6071829 /* GroqWhisperProvider.swift */,
+				F60718293041F2A1B2C3D4E5 /* KeychainManager.swift */,
 				B2C3D4E5F6071829304152A1 /* NotesIntegrationService.swift */,
 				29766CE8D47B78189D83A08F /* PermissionManager.swift */,
 				EA7BD892C6D61CC4E2196A1F /* TextInsertionService.swift */,
+				D4E5F60718293041F2A1B2C3 /* TranscriptionProvider.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -232,7 +244,10 @@
 				50028A2DD10A49E106167C5B /* AppDelegate.swift in Sources */,
 				0A9D84FDCBC5D90F74A8985B /* AppState.swift in Sources */,
 				40EB7982B1E379AD07A4E589 /* AudioCaptureManager.swift in Sources */,
+				07182930F2A1B2C3D4E5F617 /* AudioFileManager.swift in Sources */,
 				38CFECBC565D76DFB34FF71D /* BackendManager.swift in Sources */,
+				293041F2A1B2C3D4E5F60718 /* GroqWhisperProvider.swift in Sources */,
+				E5F60718293041F2A1B2C3D4 /* KeychainManager.swift in Sources */,
 				BCE934EF72B324B1FA0F306C /* MenuBarView.swift in Sources */,
 				A1B2C3D4E5F6071829304152 /* NotesIntegrationService.swift in Sources */,
 				813780722DF515617CEB4F89 /* OnboardingView.swift in Sources */,
@@ -240,6 +255,7 @@
 				79B94B49435B0573A092DF71 /* PermissionManager.swift in Sources */,
 				15DCEEA6EBF6A741387D5EC9 /* SettingsView.swift in Sources */,
 				EAEC5D84EB5CE21AFA5D878E /* TextInsertionService.swift in Sources */,
+				C3D4E5F60718293041F2A1B2 /* TranscriptionProvider.swift in Sources */,
 				7FBCBF53096D6B29CDC81C6A /* MuteApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -93,8 +93,6 @@ class ClientSession:
         self.audio_chunks: list[np.ndarray] = []  # Efficient numpy storage
         self.total_samples = 0  # Track total without concatenating
         self.current_settings = {}
-        self.continuous_mode = False
-        self._last_partial_text = ""
         self._last_log_second = 0
 
         # Model state for this session
@@ -598,8 +596,6 @@ class MuteServer:
             session.is_recording = True
             session.clear_audio()
             session.current_settings = settings
-            session.continuous_mode = settings.get("continuous_mode", False)
-            session._last_partial_text = ""
             session.has_done_first_interval = False
 
             # Speaker diarization
@@ -623,7 +619,7 @@ class MuteServer:
             session.active_engine.start_session()
 
             logger.info(f"[Session {session.session_id}] Recording started with model: {requested_model}, "
-                       f"continuous_mode: {session.continuous_mode}, diarization: {session.diarization_enabled}")
+                       f"diarization: {session.diarization_enabled}")
 
         # Send recording_ready confirmation so client knows to start sending audio
         await websocket.send(json.dumps({
@@ -692,26 +688,6 @@ class MuteServer:
             if int(buffer_seconds) > 0 and int(buffer_seconds) != session._last_log_second:
                 session._last_log_second = int(buffer_seconds)
                 logger.info(f"[Session {session.session_id}] Recording: {buffer_seconds:.1f}s")
-
-            # Incremental transcription for continuous mode
-            if session.continuous_mode and session.active_engine:
-                # Only transcribe every ~1.5 seconds of audio to avoid overloading
-                if buffer_seconds >= 1.5 and (buffer_seconds % 1.5) < 0.1:
-                    try:
-                        async with session.lock:
-                            audio_array = session.get_audio_array()
-                        partial_text = await session.active_engine.transcribe_incremental(audio_array)
-                        # Only send if text changed
-                        if partial_text and partial_text != session._last_partial_text:
-                            session._last_partial_text = partial_text
-                            await websocket.send(json.dumps({
-                                "type": "partial",
-                                "text": partial_text,
-                                "timestamp": int(buffer_seconds * 1000)
-                            }))
-                            logger.info(f"[Session {session.session_id}] Partial: '{partial_text[:50]}...'")
-                    except Exception as e:
-                        logger.error(f"[Session {session.session_id}] Incremental transcription error: {e}")
 
         except Exception as e:
             logger.error(f"[Session {session.session_id}] Error processing audio: {e}")

@@ -21,7 +21,7 @@ struct SettingsView: View {
                     Label("Transcription", systemImage: "waveform")
                 }
 
-            ModelSettingsTab()
+            EngineSettingsTab()
                 .tabItem {
                     Label("Model", systemImage: "cpu")
                 }
@@ -36,7 +36,7 @@ struct SettingsView: View {
                     Label("About", systemImage: "info.circle")
                 }
         }
-        .frame(width: 520, height: 440)
+        .frame(width: 520, height: 520)
         .environmentObject(appState)
     }
 }
@@ -485,37 +485,6 @@ struct TranscriptionSettingsTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // Continuous Mode Section
-                VStack(alignment: .leading, spacing: 10) {
-                    SettingsSectionHeader(title: "Continuous Mode", icon: "arrow.triangle.2.circlepath")
-
-                    SettingsCard {
-                        VStack(alignment: .leading, spacing: 10) {
-                            SettingsToggleRow(
-                                title: "Paste partial results continuously",
-                                description: "Insert text as it's being transcribed (experimental)",
-                                isOn: $appState.pasteContinuously
-                            )
-
-                            if appState.pasteContinuously {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.orange)
-                                    Text("This may cause text to be inserted multiple times as transcription updates.")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.orange)
-                                }
-                                .padding(10)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(Color.orange.opacity(0.1))
-                                )
-                            }
-                        }
-                    }
-                }
-
                 // Capture to Notes Section
                 VStack(alignment: .leading, spacing: 10) {
                     SettingsSectionHeader(title: "Capture to Notes", icon: "note.text")
@@ -559,99 +528,108 @@ struct TranscriptionSettingsTab: View {
                     }
                 }
 
-                // Active Models Info
-                VStack(alignment: .leading, spacing: 10) {
-                    SettingsSectionHeader(title: "Active Models", icon: "info.circle")
-
-                    SettingsCard {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("Dictation:")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.secondary)
-                                Text(modelDisplayName(appState.dictationModel))
-                                    .font(.system(size: 12, weight: .medium))
-                            }
-                            HStack {
-                                Text("Capture to Notes:")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.secondary)
-                                Text(modelDisplayName(appState.captureNotesModel))
-                                    .font(.system(size: 12, weight: .medium))
-                            }
-                            Text("Configure models in the Model tab.")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                                .padding(.top, 4)
-                        }
-                    }
-                }
             }
             .padding(20)
         }
     }
-
-    private func modelDisplayName(_ modelId: String) -> String {
-        switch modelId {
-        case "parakeet": return "NVIDIA Parakeet TDT v3"
-        case "base": return "Whisper Base"
-        case "large-v3-turbo": return "Whisper Turbo"
-        default: return modelId
-        }
-    }
 }
 
-// MARK: - Model Settings Tab
-struct ModelSettingsTab: View {
+// MARK: - Engine Settings Tab (Unified Cloud + Model)
+struct EngineSettingsTab: View {
     @EnvironmentObject var appState: AppState
+    @State private var apiKeyInput: String = ""
+    @State private var showingAPIKey: Bool = false
+    @State private var hasStoredKey: Bool = false
+    @State private var maskedKey: String? = nil
+
+    private var isCloudMode: Bool {
+        TranscriptionBackend(rawValue: appState.transcriptionBackendRaw) == .groqWhisper
+    }
+
+    // Fallback Whisper models if backend hasn't provided them yet
+    private var whisperModels: [(id: String, name: String)] {
+        let backendModels = appState.backendManager.availableModels.filter { $0.id != "parakeet" }
+        if !backendModels.isEmpty {
+            return backendModels.map { ($0.id, $0.name) }
+        }
+        // Fallback list
+        return [
+            ("base", "Whisper Base"),
+            ("small", "Whisper Small"),
+            ("medium", "Whisper Medium"),
+            ("large-v3-turbo", "Whisper Large V3 Turbo")
+        ]
+    }
+
+    // All models including Parakeet for local dictation
+    private var allLocalModels: [(id: String, name: String)] {
+        var models: [(id: String, name: String)] = [("parakeet", "NVIDIA Parakeet TDT v3")]
+        models.append(contentsOf: whisperModels)
+        return models
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // Model Selection Section
+                // MARK: - Dictation Engine Section
                 VStack(alignment: .leading, spacing: 10) {
-                    SettingsSectionHeader(title: "Model Selection", icon: "cpu")
+                    SettingsSectionHeader(title: "Dictation Engine", icon: "mic.fill")
 
                     SettingsCard {
                         VStack(alignment: .leading, spacing: 14) {
-                            // Dictation Model Picker
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Dictation Model")
-                                        .font(.system(size: 13, weight: .medium))
-                                    Text("Used for Start/Stop recording")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.secondary)
+                            // Backend selector
+                            Picker("Engine", selection: $appState.transcriptionBackendRaw) {
+                                ForEach(TranscriptionBackend.allCases) { backend in
+                                    Text(backend.displayName).tag(backend.rawValue)
                                 }
-                                Spacer()
-                                Picker("", selection: $appState.dictationModel) {
-                                    // Always show Parakeet
-                                    Text("NVIDIA Parakeet TDT v3").tag("parakeet")
-                                    // Add Whisper models from backend
-                                    ForEach(appState.backendManager.availableModels.filter { $0.id != "parakeet" }) { model in
-                                        Text(model.name).tag(model.id)
-                                    }
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.menu)
-                                .frame(width: 200)
                             }
+                            .pickerStyle(.radioGroup)
 
-                            Divider()
+                            // Show relevant options based on selection
+                            if isCloudMode {
+                                // Cloud mode options
+                                cloudModeOptions
+                            } else {
+                                // Local mode options
+                                localModeOptions
+                            }
+                        }
+                    }
+                }
 
-                            // Capture to Notes Model Picker (Whisper only - required for word timestamps)
+                // MARK: - Capture to Notes Engine Section
+                VStack(alignment: .leading, spacing: 10) {
+                    SettingsSectionHeader(title: "Capture to Notes Engine", icon: "note.text")
+
+                    SettingsCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            // Info about why only local Whisper
+                            HStack(spacing: 8) {
+                                Image(systemName: "info.circle.fill")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.blue)
+                                Text("Capture to Notes requires local Whisper models for word-level timestamps.")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color.blue.opacity(0.1))
+                            )
+
+                            // Capture to Notes Model Picker
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("Capture to Notes Model")
+                                    Text("Model")
                                         .font(.system(size: 13, weight: .medium))
-                                    Text("Whisper models only (required for continuous capture)")
+                                    Text("Whisper models with timestamp support")
                                         .font(.system(size: 11))
                                         .foregroundColor(.secondary)
                                 }
                                 Spacer()
                                 Picker("", selection: $appState.captureNotesModel) {
-                                    // Only Whisper models - Parakeet doesn't support word timestamps
-                                    ForEach(appState.backendManager.availableModels.filter { $0.id != "parakeet" }) { model in
+                                    ForEach(whisperModels, id: \.id) { model in
                                         Text(model.name).tag(model.id)
                                     }
                                 }
@@ -663,89 +641,91 @@ struct ModelSettingsTab: View {
                     }
                 }
 
-                // Performance Section
-                VStack(alignment: .leading, spacing: 10) {
-                    SettingsSectionHeader(title: "Performance", icon: "bolt.fill", iconColor: .orange)
+                // MARK: - Performance Section (only for local models)
+                if !isCloudMode || true { // Always show - Capture to Notes uses local
+                    VStack(alignment: .leading, spacing: 10) {
+                        SettingsSectionHeader(title: "Performance", icon: "bolt.fill", iconColor: .orange)
 
-                    SettingsCard {
-                        VStack(alignment: .leading, spacing: 14) {
-                            SettingsToggleRow(
-                                title: "Keep dictation model ready",
-                                description: "Pre-load \(modelDisplayName(appState.dictationModel)) for faster Start/Stop",
-                                isOn: $appState.keepDictationModelReady
-                            )
+                        SettingsCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                if !isCloudMode {
+                                    SettingsToggleRow(
+                                        title: "Keep dictation model ready",
+                                        description: "Pre-load \(modelDisplayName(appState.dictationModel)) for faster Start/Stop",
+                                        isOn: $appState.keepDictationModelReady
+                                    )
 
-                            Divider()
+                                    Divider()
+                                }
 
-                            SettingsToggleRow(
-                                title: "Keep capture model ready",
-                                description: "Pre-load \(modelDisplayName(appState.captureNotesModel)) for faster Capture to Notes",
-                                isOn: $appState.keepCaptureModelReady
-                            )
+                                SettingsToggleRow(
+                                    title: "Keep capture model ready",
+                                    description: "Pre-load \(modelDisplayName(appState.captureNotesModel)) for faster Capture to Notes",
+                                    isOn: $appState.keepCaptureModelReady
+                                )
 
-                            if appState.keepDictationModelReady || appState.keepCaptureModelReady {
-                                Divider()
+                                if appState.keepDictationModelReady || appState.keepCaptureModelReady {
+                                    Divider()
 
-                                // Duration picker
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Keep loaded for")
-                                            .font(.system(size: 13, weight: .medium))
-                                        Text("Unload models after idle period")
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("Keep loaded for")
+                                                .font(.system(size: 13, weight: .medium))
+                                            Text("Unload models after idle period")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                        Picker("", selection: $appState.keepModelWarmDuration) {
+                                            Text("1 hour").tag("1h")
+                                            Text("4 hours").tag("4h")
+                                            Text("8 hours").tag("8h")
+                                            Text("16 hours").tag("16h")
+                                            Text("Always").tag("permanent")
+                                        }
+                                        .labelsHidden()
+                                        .pickerStyle(.menu)
+                                        .frame(width: 120)
+                                    }
+
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "memorychip")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.orange)
+                                        Text("Models use 1-3 GB RAM each when loaded.")
                                             .font(.system(size: 11))
                                             .foregroundColor(.secondary)
                                     }
-                                    Spacer()
-                                    Picker("", selection: $appState.keepModelWarmDuration) {
-                                        Text("1 hour").tag("1h")
-                                        Text("4 hours").tag("4h")
-                                        Text("8 hours").tag("8h")
-                                        Text("16 hours").tag("16h")
-                                        Text("Always").tag("permanent")
-                                    }
-                                    .labelsHidden()
-                                    .pickerStyle(.menu)
-                                    .frame(width: 120)
+                                    .padding(10)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(Color.orange.opacity(0.1))
+                                    )
                                 }
-
-                                // Memory warning info box
-                                HStack(spacing: 8) {
-                                    Image(systemName: "memorychip")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.orange)
-                                    Text("Models use 1-3 GB RAM each when loaded. Choose a shorter duration if memory is limited.")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.secondary)
-                                }
-                                .padding(10)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(Color.orange.opacity(0.1))
-                                )
                             }
                         }
                     }
-                }
-                .onChange(of: appState.keepDictationModelReady) { _ in
-                    appState.syncKeepWarmSettings()
-                }
-                .onChange(of: appState.keepCaptureModelReady) { _ in
-                    appState.syncKeepWarmSettings()
-                }
-                .onChange(of: appState.keepModelWarmDuration) { _ in
-                    appState.syncKeepWarmSettings()
+                    .onChange(of: appState.keepDictationModelReady) { _ in
+                        appState.syncKeepWarmSettings()
+                    }
+                    .onChange(of: appState.keepCaptureModelReady) { _ in
+                        appState.syncKeepWarmSettings()
+                    }
+                    .onChange(of: appState.keepModelWarmDuration) { _ in
+                        appState.syncKeepWarmSettings()
+                    }
                 }
 
-                // Available Models Section
+                // MARK: - Available Local Models Section
                 VStack(alignment: .leading, spacing: 10) {
-                    SettingsSectionHeader(title: "Available Models", icon: "square.stack.3d.up")
+                    SettingsSectionHeader(title: "Available Local Models", icon: "square.stack.3d.up")
 
                     SettingsCard {
                         VStack(alignment: .leading, spacing: 12) {
                             // Parakeet
                             ModelStatusRow(
                                 name: "NVIDIA Parakeet TDT v3",
-                                description: "High-quality multilingual (25 languages)",
+                                description: "Fast, multilingual (25 languages)",
                                 size: "~2.5 GB",
                                 isLoaded: appState.modelStatus == .ready,
                                 isAvailable: appState.modelStatus == .ready || appState.modelStatus == .downloaded,
@@ -759,11 +739,12 @@ struct ModelSettingsTab: View {
                                 }
                             )
 
-                            if appState.backendManager.whisperAvailable {
-                                Divider()
+                            Divider()
 
-                                // Whisper models from backend
-                                let whisperFromBackend = appState.backendManager.availableModels.filter { $0.id != "parakeet" }
+                            // Show Whisper models - use backend data if available, otherwise fallback
+                            let whisperFromBackend = appState.backendManager.availableModels.filter { $0.id != "parakeet" }
+                            if !whisperFromBackend.isEmpty {
+                                // Backend connected and has Whisper models
                                 ForEach(whisperFromBackend) { model in
                                     ModelStatusRow(
                                         name: model.name,
@@ -783,7 +764,29 @@ struct ModelSettingsTab: View {
                                     }
                                 }
                             } else {
-                                Divider()
+                                // Backend not connected or no models yet - show fallback list
+                                ForEach(whisperModels, id: \.id) { model in
+                                    ModelStatusRow(
+                                        name: model.name,
+                                        description: "OpenAI Whisper model",
+                                        size: whisperModelSize(model.id),
+                                        isLoaded: false,
+                                        isAvailable: false,
+                                        isDownloading: false,
+                                        downloadProgress: 0,
+                                        onDownload: nil,
+                                        onLoad: {
+                                            appState.backendManager.loadModel(model.id)
+                                        }
+                                    )
+                                    if model.id != whisperModels.last?.id {
+                                        Divider()
+                                    }
+                                }
+                            }
+
+                            // Only show "not installed" warning if backend IS connected but Whisper is not available
+                            if appState.backendStatus == .connected && !appState.backendManager.whisperAvailable {
                                 HStack(spacing: 8) {
                                     Image(systemName: "exclamationmark.triangle.fill")
                                         .font(.system(size: 11))
@@ -798,9 +801,9 @@ struct ModelSettingsTab: View {
                     }
                 }
 
-                // Parakeet Actions Section
+                // MARK: - Model Actions Section
                 VStack(alignment: .leading, spacing: 10) {
-                    SettingsSectionHeader(title: "Parakeet Model Actions", icon: "arrow.down.circle")
+                    SettingsSectionHeader(title: "Model Actions", icon: "arrow.down.circle")
 
                     SettingsCard {
                         HStack(spacing: 12) {
@@ -810,9 +813,7 @@ struct ModelSettingsTab: View {
                                 color: .accentColor,
                                 isDisabled: appState.modelStatus == .downloading || appState.modelStatus == .ready
                             ) {
-                                Task {
-                                    await appState.downloadModel()
-                                }
+                                Task { await appState.downloadModel() }
                             }
 
                             ActionButton(
@@ -838,9 +839,218 @@ struct ModelSettingsTab: View {
             .padding(20)
         }
         .onAppear {
-            // Sync keep-warm settings with backend when view appears
+            refreshKeyStatus()
             appState.syncKeepWarmSettings()
         }
+    }
+
+    // MARK: - Local Mode Options
+    @ViewBuilder
+    private var localModeOptions: some View {
+        Divider()
+
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Model")
+                    .font(.system(size: 13, weight: .medium))
+                Text("Local model for dictation")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Picker("", selection: $appState.dictationModel) {
+                ForEach(allLocalModels, id: \.id) { model in
+                    Text(model.name).tag(model.id)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 180)
+        }
+
+        HStack(spacing: 8) {
+            Image(systemName: "lock.shield.fill")
+                .font(.system(size: 11))
+                .foregroundColor(.green)
+            Text("Audio is processed entirely on-device. Nothing is sent to external servers.")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.green.opacity(0.1))
+        )
+    }
+
+    // MARK: - Cloud Mode Options
+    @ViewBuilder
+    private var cloudModeOptions: some View {
+        Divider()
+
+        // Privacy warning
+        HStack(spacing: 8) {
+            Image(systemName: "cloud.fill")
+                .font(.system(size: 11))
+                .foregroundColor(.blue)
+            Text("Audio is sent to Groq servers for transcription. Requires internet.")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.blue.opacity(0.1))
+        )
+
+        Divider()
+
+        // API Key status and input
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Circle()
+                    .fill(hasStoredKey ? Color.green : Color.orange)
+                    .frame(width: 8, height: 8)
+
+                if hasStoredKey, let masked = maskedKey {
+                    Text("API Key: \(masked)")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("No API key configured")
+                        .font(.system(size: 12))
+                        .foregroundColor(.orange)
+                }
+
+                Spacer()
+
+                if hasStoredKey {
+                    Button(action: clearAPIKey) {
+                        Text("Clear")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.red)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            HStack(spacing: 8) {
+                if showingAPIKey {
+                    TextField("gsk_...", text: $apiKeyInput)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                } else {
+                    SecureField("gsk_...", text: $apiKeyInput)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                }
+
+                Button(action: { showingAPIKey.toggle() }) {
+                    Image(systemName: showingAPIKey ? "eye.slash" : "eye")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.plain)
+
+                Button(action: saveAPIKey) {
+                    Text("Save")
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(apiKeyInput.isEmpty ? Color.gray.opacity(0.3) : Color.accentColor)
+                        .foregroundColor(.white)
+                        .cornerRadius(6)
+                }
+                .buttonStyle(.plain)
+                .disabled(apiKeyInput.isEmpty)
+            }
+
+            // Get API key help
+            HStack(spacing: 4) {
+                Link(destination: URL(string: "https://console.groq.com/keys")!) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.system(size: 10))
+                        Text("Get API key from Groq Console")
+                            .font(.system(size: 11))
+                    }
+                    .foregroundColor(.accentColor)
+                }
+            }
+        }
+
+        Divider()
+
+        // Language hint
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Language")
+                    .font(.system(size: 13, weight: .medium))
+                Text("Hint for better accuracy")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Picker("", selection: $appState.cloudTranscriptionLanguage) {
+                Text("Auto-detect").tag("")
+                Text("English").tag("en")
+                Text("German").tag("de")
+                Text("Spanish").tag("es")
+                Text("French").tag("fr")
+                Text("Italian").tag("it")
+                Text("Portuguese").tag("pt")
+                Text("Dutch").tag("nl")
+                Text("Polish").tag("pl")
+                Text("Japanese").tag("ja")
+                Text("Chinese").tag("zh")
+                Text("Korean").tag("ko")
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 130)
+        }
+
+        // Context prompt
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Context Prompt")
+                .font(.system(size: 13, weight: .medium))
+            TextField("Spelling hints, technical terms...", text: $appState.cloudTranscriptionPrompt)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12))
+        }
+
+        // Billing note
+        HStack(spacing: 8) {
+            Image(systemName: "dollarsign.circle")
+                .font(.system(size: 11))
+                .foregroundColor(.green)
+            Text("Groq bills min. 10s per request. Free tier: 25 MB max.")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: - Helper Functions
+    private func saveAPIKey() {
+        guard !apiKeyInput.isEmpty else { return }
+        let success = KeychainManager.shared.setGroqAPIKey(apiKeyInput)
+        if success {
+            Logger.shared.log("Groq API key saved to Keychain")
+            apiKeyInput = ""
+            refreshKeyStatus()
+        } else {
+            Logger.shared.log("Failed to save Groq API key", level: .error)
+        }
+    }
+
+    private func clearAPIKey() {
+        KeychainManager.shared.deleteGroqAPIKey()
+        Logger.shared.log("Groq API key removed from Keychain")
+        refreshKeyStatus()
+    }
+
+    private func refreshKeyStatus() {
+        hasStoredKey = KeychainManager.shared.hasGroqAPIKey
+        maskedKey = KeychainManager.shared.getMaskedGroqAPIKey()
     }
 
     private func showModelInFinder() {
@@ -857,6 +1067,16 @@ struct ModelSettingsTab: View {
         case "base": return "Whisper Base"
         case "large-v3-turbo": return "Whisper Turbo"
         default: return modelId
+        }
+    }
+
+    private func whisperModelSize(_ modelId: String) -> String {
+        switch modelId {
+        case "base": return "~140 MB"
+        case "small": return "~460 MB"
+        case "medium": return "~1.5 GB"
+        case "large-v3-turbo": return "~1.5 GB"
+        default: return "~1 GB"
         }
     }
 }
@@ -1296,11 +1516,11 @@ struct AboutTab: View {
                     Text("Mute")
                         .font(.system(size: 24, weight: .bold))
 
-                    Text("Version 1.0.0")
+                    Text("Version 1.2.0")
                         .font(.system(size: 13))
                         .foregroundColor(.secondary)
 
-                    Text("Local speech-to-text with multiple model support")
+                    Text("Speech-to-text with local and cloud transcription")
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
                 }
@@ -1323,6 +1543,7 @@ struct AboutTab: View {
                 VStack(alignment: .leading, spacing: 6) {
                     LicenseRow(name: "Parakeet TDT v3 Model", license: "CC-BY-4.0")
                     LicenseRow(name: "OpenAI Whisper", license: "MIT")
+                    LicenseRow(name: "Groq Cloud API", license: "Proprietary")
                     LicenseRow(name: "KeyboardShortcuts", license: "MIT")
                     LicenseRow(name: "Starscream", license: "Apache 2.0")
                     LicenseRow(name: "NeMo Toolkit", license: "Apache 2.0")
@@ -1338,13 +1559,23 @@ struct AboutTab: View {
             Spacer()
 
             // Privacy Notice
-            HStack(spacing: 6) {
-                Image(systemName: "lock.shield.fill")
-                    .font(.system(size: 11))
-                    .foregroundColor(.green)
-                Text("All transcription is performed locally. No data is sent to external servers.")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+            VStack(spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: "lock.shield.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(.green)
+                    Text("Local mode: All transcription is performed on-device.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                HStack(spacing: 6) {
+                    Image(systemName: "cloud.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(.blue)
+                    Text("Cloud mode: Audio is sent to Groq servers for transcription.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
             }
             .padding(.bottom, 20)
         }

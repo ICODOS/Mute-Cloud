@@ -214,10 +214,10 @@ struct MainAppView: View {
                                             .font(.system(size: 11, weight: .medium))
                                             .foregroundColor(.red)
                                     } else {
-                                        Image(systemName: "cpu")
+                                        Image(systemName: appState.transcriptionBackend == .groqWhisper ? "cloud" : "cpu")
                                             .font(.system(size: 10))
                                             .foregroundColor(.secondary)
-                                        Text(modelDisplayName(appState.dictationModel))
+                                        Text(dictationEngineDisplayName)
                                             .font(.system(size: 10))
                                             .foregroundColor(.secondary)
                                     }
@@ -848,10 +848,20 @@ struct MainAppView: View {
         }
     }
 
+    private var dictationEngineDisplayName: String {
+        if appState.transcriptionBackend == .groqWhisper {
+            return "Groq Whisper"
+        } else {
+            return modelDisplayName(appState.dictationModel)
+        }
+    }
+
     private func modelDisplayName(_ modelId: String) -> String {
         switch modelId {
         case "parakeet": return "Parakeet"
         case "base": return "Whisper Base"
+        case "small": return "Whisper Small"
+        case "medium": return "Whisper Medium"
         case "large-v3-turbo": return "Whisper Turbo"
         default: return modelId
         }

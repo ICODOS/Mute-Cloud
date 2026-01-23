@@ -4,7 +4,7 @@ A privacy-focused speech-to-text app for macOS with support for multiple ASR mod
 
 ![macOS](https://img.shields.io/badge/macOS-13.0+-blue)
 ![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1/M2/M3/M4-green)
-![Version](https://img.shields.io/badge/version-1.2.0-orange)
+![Version](https://img.shields.io/badge/version-1.3.0-orange)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ## Features
@@ -20,7 +20,7 @@ A privacy-focused speech-to-text app for macOS with support for multiple ASR mod
 
 ### ASR Models
 - **NVIDIA Parakeet TDT v3** - Fast, multilingual (25 European languages), MPS-accelerated
-- **OpenAI Whisper** - Multiple sizes (tiny, base, small, medium, large) with word-level timestamps
+- **OpenAI Whisper** - Base and Large V3 Turbo with word-level timestamps
 - **Groq Whisper V3 Turbo** - Cloud-based, fast inference, requires API key
 
 ### Advanced Features

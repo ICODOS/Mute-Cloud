@@ -32,6 +32,7 @@ class BackendManager: ObservableObject {
 
     private var messageQueue: [Data] = []
     private var isConnected = false
+    private var isRestarting = false
 
     // Connection health tracking
     private var lastPongTime: Date = Date()
@@ -132,7 +133,8 @@ class BackendManager: ObservableObject {
     // MARK: - Lifecycle
     func start() async {
         Logger.shared.log("Starting backend manager")
-        
+        reconnectAttempts = 0
+
         // Disconnect any existing connection first
         disconnect()
         
@@ -157,10 +159,16 @@ class BackendManager: ObservableObject {
     }
     
     func restart() async {
+        guard !isRestarting else {
+            Logger.shared.log("Restart already in progress, skipping")
+            return
+        }
+        isRestarting = true
         Logger.shared.log("Restarting backend")
         stop()
         try? await Task.sleep(nanoseconds: 1_000_000_000)
         await start()
+        isRestarting = false
     }
     
     private func killExistingProcessOnPort() {
@@ -313,12 +321,18 @@ class BackendManager: ObservableObject {
     
     private func handleProcessTermination() {
         status = .disconnected
-        
+
+        // Don't auto-restart if a restart is already in progress
+        guard !isRestarting else {
+            Logger.shared.log("Backend terminated during restart, skipping auto-restart")
+            return
+        }
+
         // Auto-restart if unexpected termination
         if reconnectAttempts < maxReconnectAttempts {
             reconnectAttempts += 1
             Logger.shared.log("Backend terminated, attempting restart (\(reconnectAttempts)/\(maxReconnectAttempts))")
-            
+
             Task {
                 try? await Task.sleep(nanoseconds: UInt64(reconnectAttempts) * 1_000_000_000)
                 await start()
@@ -427,7 +441,6 @@ class BackendManager: ObservableObject {
 
         isConnected = true
         status = .connected
-        reconnectAttempts = 0
 
         Logger.shared.log("WebSocket connected")
         
@@ -498,6 +511,7 @@ class BackendManager: ObservableObject {
             whisperAvailable = whisperAvail
             loadedModels = loaded
             modelStatus = modelLoaded ? .ready : .notDownloaded
+            reconnectAttempts = 0
             Logger.shared.log("Backend ready, model loaded: \(modelLoaded), whisper available: \(whisperAvail)")
 
             // Request available models list

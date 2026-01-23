@@ -24,11 +24,10 @@ class OverlayPanel: NSPanel {
     }
 
     convenience init() {
-        self.init(contentRect: NSRect(x: 0, y: 0, width: 44, height: 44), styleMask: [], backing: .buffered, defer: false)
+        self.init(contentRect: NSRect(x: 0, y: 0, width: 64, height: 64), styleMask: [], backing: .buffered, defer: false)
     }
 
     private func setupPanel() {
-        // Panel configuration
         self.level = .floating
         self.backgroundColor = .clear
         self.isOpaque = false
@@ -38,11 +37,10 @@ class OverlayPanel: NSPanel {
         self.isMovableByWindowBackground = false
         self.animationBehavior = .none
 
-        // Setup SwiftUI content
         let contentView = OverlayContentView(viewModel: viewModel)
         let hostingView = NSHostingView(rootView: contentView)
 
-        let panelSize = NSSize(width: 44, height: 44)
+        let panelSize = NSSize(width: 64, height: 64)
         hostingView.frame = NSRect(origin: .zero, size: panelSize)
         hostingView.autoresizingMask = [.width, .height]
 
@@ -55,8 +53,8 @@ class OverlayPanel: NSPanel {
     private func positionPanel() {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
 
-        let margin: CGFloat = 20
-        let panelSize: CGFloat = 44
+        let margin: CGFloat = 14
+        let panelSize: CGFloat = 64
 
         let x = screen.visibleFrame.origin.x + margin
         let y = screen.visibleFrame.origin.y + screen.visibleFrame.height - panelSize - margin
@@ -121,58 +119,118 @@ struct OverlayContentView: View {
                 ErrorIndicator()
             }
         }
-        .frame(width: 44, height: 44)
+        .frame(width: 64, height: 64)
+    }
+}
+
+// MARK: - State Colors
+private struct StateColors {
+    static let recording = Color(red: 0.95, green: 0.25, blue: 0.25)
+    static let processing = Color(red: 0.95, green: 0.65, blue: 0.15)
+    static let done = Color(red: 0.25, green: 0.85, blue: 0.55)
+    static let error = Color(red: 0.95, green: 0.3, blue: 0.3)
+}
+
+// MARK: - Indicator Base
+struct IndicatorBase: View {
+    let stateColor: Color
+    let glowIntensity: Double
+
+    var body: some View {
+        ZStack {
+            // Outer diffused glow
+            Circle()
+                .fill(stateColor.opacity(glowIntensity * 0.3))
+                .frame(width: 48, height: 48)
+                .blur(radius: 10)
+
+            // Inner tight glow
+            Circle()
+                .fill(stateColor.opacity(glowIntensity * 0.5))
+                .frame(width: 38, height: 38)
+                .blur(radius: 5)
+
+            // Dark base with depth gradient
+            Circle()
+                .fill(
+                    RadialGradient(
+                        gradient: Gradient(colors: [
+                            Color(white: 0.18),
+                            Color(white: 0.08)
+                        ]),
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: 18
+                    )
+                )
+                .frame(width: 36, height: 36)
+
+            // Subtle highlight edge (top-left light source)
+            Circle()
+                .stroke(
+                    LinearGradient(
+                        gradient: Gradient(colors: [
+                            Color.white.opacity(0.15),
+                            Color.white.opacity(0.03)
+                        ]),
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.75
+                )
+                .frame(width: 36, height: 36)
+        }
     }
 }
 
 // MARK: - Recording Indicator
 struct RecordingIndicator: View {
-    @State private var isAnimating = false
-    @State private var ringScale: CGFloat = 1.0
+    @State private var ringRotation: Double = 0
+    @State private var dotScale: CGFloat = 1.0
+    @State private var glowPulse: Double = 0.6
+    @State private var appeared = false
 
     var body: some View {
         ZStack {
-            // Outer pulsing ring
-            Circle()
-                .stroke(Color.red.opacity(0.3), lineWidth: 2)
-                .frame(width: 36, height: 36)
-                .scaleEffect(ringScale)
-                .opacity(2 - ringScale)
+            IndicatorBase(stateColor: StateColors.recording, glowIntensity: glowPulse)
 
-            // Middle ring
+            // Rotating gradient ring
             Circle()
-                .stroke(Color.red.opacity(0.5), lineWidth: 1.5)
-                .frame(width: 28, height: 28)
-
-            // Inner glowing circle
-            Circle()
-                .fill(
-                    RadialGradient(
-                        gradient: Gradient(colors: [
-                            Color.red,
-                            Color.red.opacity(0.8)
+                .trim(from: 0, to: 0.65)
+                .stroke(
+                    AngularGradient(
+                        gradient: Gradient(stops: [
+                            .init(color: StateColors.recording.opacity(0.0), location: 0.0),
+                            .init(color: StateColors.recording.opacity(0.5), location: 0.3),
+                            .init(color: StateColors.recording, location: 0.6),
+                            .init(color: StateColors.recording.opacity(0.8), location: 0.65)
                         ]),
-                        center: .center,
-                        startRadius: 0,
-                        endRadius: 10
-                    )
+                        center: .center
+                    ),
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round)
                 )
-                .frame(width: 16, height: 16)
-                .shadow(color: Color.red.opacity(0.6), radius: 8, x: 0, y: 0)
-                .scaleEffect(isAnimating ? 1.1 : 0.95)
+                .frame(width: 42, height: 42)
+                .rotationEffect(.degrees(ringRotation))
+
+            // Center dot (rounded square = stop icon vibe)
+            RoundedRectangle(cornerRadius: 3.5)
+                .fill(StateColors.recording)
+                .frame(width: 11, height: 11)
+                .scaleEffect(dotScale)
+                .shadow(color: StateColors.recording.opacity(0.6), radius: 3, x: 0, y: 0)
         }
+        .opacity(appeared ? 1 : 0)
+        .scaleEffect(appeared ? 1 : 0.5)
         .onAppear {
-            withAnimation(
-                Animation.easeInOut(duration: 0.8)
-                    .repeatForever(autoreverses: true)
-            ) {
-                isAnimating = true
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.65)) {
+                appeared = true
             }
-            withAnimation(
-                Animation.easeOut(duration: 1.5)
-                    .repeatForever(autoreverses: false)
-            ) {
-                ringScale = 1.8
+            withAnimation(.linear(duration: 2.5).repeatForever(autoreverses: false)) {
+                ringRotation = 360
+            }
+            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                dotScale = 0.82
+                glowPulse = 1.0
             }
         }
     }
@@ -180,39 +238,45 @@ struct RecordingIndicator: View {
 
 // MARK: - Processing Indicator
 struct ProcessingIndicator: View {
-    @State private var rotation: Double = 0
+    @State private var ringRotation: Double = 0
+    @State private var appeared = false
 
     var body: some View {
         ZStack {
-            // Background circle
-            Circle()
-                .fill(Color.black.opacity(0.4))
-                .frame(width: 36, height: 36)
+            IndicatorBase(stateColor: StateColors.processing, glowIntensity: 0.6)
 
-            // Spinning arc
+            // Fast spinning ring
             Circle()
-                .trim(from: 0, to: 0.7)
+                .trim(from: 0, to: 0.55)
                 .stroke(
                     AngularGradient(
-                        gradient: Gradient(colors: [Color.orange.opacity(0.2), Color.orange]),
+                        gradient: Gradient(stops: [
+                            .init(color: StateColors.processing.opacity(0.0), location: 0.0),
+                            .init(color: StateColors.processing.opacity(0.4), location: 0.2),
+                            .init(color: StateColors.processing, location: 0.5),
+                            .init(color: StateColors.processing.opacity(0.7), location: 0.55)
+                        ]),
                         center: .center
                     ),
-                    style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round)
                 )
-                .frame(width: 28, height: 28)
-                .rotationEffect(.degrees(rotation))
+                .frame(width: 42, height: 42)
+                .rotationEffect(.degrees(ringRotation))
 
-            // Center dots
-            Circle()
-                .fill(Color.orange)
-                .frame(width: 6, height: 6)
+            // Waveform icon
+            Image(systemName: "waveform")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(StateColors.processing)
+                .shadow(color: StateColors.processing.opacity(0.5), radius: 2, x: 0, y: 0)
         }
+        .opacity(appeared ? 1 : 0)
+        .scaleEffect(appeared ? 1 : 0.5)
         .onAppear {
-            withAnimation(
-                Animation.linear(duration: 1)
-                    .repeatForever(autoreverses: false)
-            ) {
-                rotation = 360
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
+                appeared = true
+            }
+            withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
+                ringRotation = 360
             }
         }
     }
@@ -220,29 +284,44 @@ struct ProcessingIndicator: View {
 
 // MARK: - Done Indicator
 struct DoneIndicator: View {
-    @State private var scale: CGFloat = 0.5
-    @State private var opacity: Double = 0
+    @State private var appeared = false
+    @State private var ringProgress: CGFloat = 0.0
+    @State private var checkScale: CGFloat = 0.0
+    @State private var glowPulse: Double = 0.0
 
     var body: some View {
         ZStack {
-            Circle()
-                .fill(Color.green.opacity(0.2))
-                .frame(width: 36, height: 36)
+            IndicatorBase(stateColor: StateColors.done, glowIntensity: glowPulse)
 
+            // Ring draws in
             Circle()
-                .stroke(Color.green, lineWidth: 2)
-                .frame(width: 28, height: 28)
+                .trim(from: 0, to: ringProgress)
+                .stroke(
+                    StateColors.done.opacity(0.8),
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                )
+                .frame(width: 42, height: 42)
+                .rotationEffect(.degrees(-90))
 
+            // Checkmark
             Image(systemName: "checkmark")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundColor(.green)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(StateColors.done)
+                .scaleEffect(checkScale)
+                .shadow(color: StateColors.done.opacity(0.5), radius: 2, x: 0, y: 0)
         }
-        .scaleEffect(scale)
-        .opacity(opacity)
+        .opacity(appeared ? 1 : 0)
+        .scaleEffect(appeared ? 1 : 0.5)
         .onAppear {
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
-                scale = 1.0
-                opacity = 1.0
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
+                appeared = true
+            }
+            withAnimation(.easeOut(duration: 0.45).delay(0.1)) {
+                ringProgress = 1.0
+                glowPulse = 0.8
+            }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.45).delay(0.3)) {
+                checkScale = 1.0
             }
         }
     }
@@ -250,29 +329,48 @@ struct DoneIndicator: View {
 
 // MARK: - Error Indicator
 struct ErrorIndicator: View {
-    @State private var isShaking = false
+    @State private var appeared = false
+    @State private var shakeOffset: CGFloat = 0
+    @State private var xScale: CGFloat = 0.0
 
     var body: some View {
         ZStack {
-            Circle()
-                .fill(Color.red.opacity(0.2))
-                .frame(width: 36, height: 36)
+            IndicatorBase(stateColor: StateColors.error, glowIntensity: 0.7)
 
+            // Static ring
             Circle()
-                .stroke(Color.red, lineWidth: 2)
-                .frame(width: 28, height: 28)
+                .stroke(StateColors.error.opacity(0.5), lineWidth: 2)
+                .frame(width: 42, height: 42)
 
+            // X mark
             Image(systemName: "xmark")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundColor(.red)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(StateColors.error)
+                .scaleEffect(xScale)
+                .shadow(color: StateColors.error.opacity(0.5), radius: 2, x: 0, y: 0)
         }
-        .offset(x: isShaking ? -3 : 0)
+        .opacity(appeared ? 1 : 0)
+        .scaleEffect(appeared ? 1 : 0.5)
+        .offset(x: shakeOffset)
         .onAppear {
-            withAnimation(
-                Animation.easeInOut(duration: 0.08)
-                    .repeatCount(4, autoreverses: true)
-            ) {
-                isShaking = true
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
+                appeared = true
+            }
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.4).delay(0.15)) {
+                xScale = 1.0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                withAnimation(
+                    Animation.easeInOut(duration: 0.055)
+                        .repeatCount(5, autoreverses: true)
+                ) {
+                    shakeOffset = 3
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    withAnimation(.easeOut(duration: 0.05)) {
+                        shakeOffset = 0
+                    }
+                }
             }
         }
     }

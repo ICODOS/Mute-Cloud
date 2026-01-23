@@ -552,11 +552,9 @@ struct EngineSettingsTab: View {
         if !backendModels.isEmpty {
             return backendModels.map { ($0.id, $0.name) }
         }
-        // Fallback list
+        // Fallback list (must match backend WHISPER_MODELS)
         return [
             ("base", "Whisper Base"),
-            ("small", "Whisper Small"),
-            ("medium", "Whisper Medium"),
             ("large-v3-turbo", "Whisper Large V3 Turbo")
         ]
     }
@@ -1516,7 +1514,7 @@ struct AboutTab: View {
                     Text("Mute")
                         .font(.system(size: 24, weight: .bold))
 
-                    Text("Version 1.2.0")
+                    Text("Version 1.3.0")
                         .font(.system(size: 13))
                         .foregroundColor(.secondary)
 

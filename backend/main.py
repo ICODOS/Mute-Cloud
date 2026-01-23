@@ -233,8 +233,30 @@ class MuteServer:
         self.keep_warm_models: set = set()  # Which models to keep warm
         self.keep_warm_duration: str = "4h"  # "1h", "4h", "8h", "16h", "permanent"
         self.last_inference_time: Dict[str, float] = {}
+        self.last_warm_up_time: Dict[str, float] = {}
         self.keep_warm_task: Optional[asyncio.Task] = None
         
+    async def _load_models_background(self):
+        """Load models in background after server is ready."""
+        if self.model_manager.is_model_downloaded():
+            logger.info("Parakeet model found, loading...")
+            await self.load_model(self.MODEL_PARAKEET)
+        else:
+            logger.info("Parakeet model not downloaded yet")
+
+        if WHISPER_AVAILABLE:
+            logger.info("Whisper is available for use")
+        else:
+            logger.info("Whisper is not installed")
+
+        # Notify all connected clients of updated status and models list
+        for ws in list(self.clients):
+            try:
+                await self.send_status(ws)
+                await self.handle_get_models(ws)
+            except Exception:
+                pass
+
     async def start(self):
         """Start the WebSocket server."""
         # Kill any existing process on this port first
@@ -242,19 +264,6 @@ class MuteServer:
 
         logger.info(f"Starting Mute server on port {self.port}")
         self.start_time = time.time()
-
-        # Check if Parakeet model is available and load it
-        if self.model_manager.is_model_downloaded():
-            logger.info("Parakeet model found, loading...")
-            await self.load_model(self.MODEL_PARAKEET)
-        else:
-            logger.info("Parakeet model not downloaded yet")
-
-        # Log Whisper availability
-        if WHISPER_AVAILABLE:
-            logger.info("Whisper is available for use")
-        else:
-            logger.info("Whisper is not installed")
 
         # Start WebSocket server with SO_REUSEADDR and keep-alive pings
         try:
@@ -267,6 +276,9 @@ class MuteServer:
                 ping_timeout=30,   # Close if no pong within 30 seconds
             )
             logger.info(f"Server running at ws://localhost:{self.port}/ws")
+
+            # Load models in background after server is accepting connections
+            asyncio.create_task(self._load_models_background())
 
             # Wait until shutdown is requested
             while not self.is_shutting_down:
@@ -290,6 +302,8 @@ class MuteServer:
                     ping_timeout=30,
                 )
                 logger.info(f"Server running at ws://localhost:{self.port}/ws (retry)")
+
+                asyncio.create_task(self._load_models_background())
 
                 while not self.is_shutting_down:
                     await asyncio.sleep(1)
@@ -1086,6 +1100,7 @@ class MuteServer:
     async def _keep_warm_monitor(self):
         """Background task that monitors model idle time and unloads idle models."""
         logger.info("Keep-warm monitor started")
+        warm_up_interval = 1800  # 30 minutes
 
         while self.keep_warm_enabled:
             try:
@@ -1094,26 +1109,38 @@ class MuteServer:
                 if not self.keep_warm_enabled:
                     break
 
-                # Skip if duration is permanent
-                if self.keep_warm_duration == "permanent":
-                    continue
-
-                duration_seconds = self._get_duration_seconds(self.keep_warm_duration)
                 current_time = time.time()
 
-                # Check each loaded model for idle timeout
-                models_to_unload = []
-                for model_id in list(self.loaded_models):
-                    last_used = self.last_inference_time.get(model_id, current_time)
-                    idle_time = current_time - last_used
+                # Skip unload check if duration is permanent
+                if self.keep_warm_duration != "permanent":
+                    duration_seconds = self._get_duration_seconds(self.keep_warm_duration)
 
-                    if idle_time > duration_seconds:
-                        logger.info(f"Model {model_id} idle for {idle_time:.0f}s (limit: {duration_seconds}s), marking for unload")
-                        models_to_unload.append(model_id)
+                    # Check each loaded model for idle timeout
+                    models_to_unload = []
+                    for model_id in list(self.loaded_models):
+                        last_used = self.last_inference_time.get(model_id, current_time)
+                        idle_time = current_time - last_used
 
-                # Unload idle models
-                for model_id in models_to_unload:
-                    await self._unload_model(model_id)
+                        if idle_time > duration_seconds:
+                            logger.info(f"Model {model_id} idle for {idle_time:.0f}s (limit: {duration_seconds}s), marking for unload")
+                            models_to_unload.append(model_id)
+
+                    # Unload idle models
+                    for model_id in models_to_unload:
+                        await self._unload_model(model_id)
+
+                # Warm-up inference to keep model weights in active GPU memory
+                any_recording = any(s.is_recording for s in self.sessions.values())
+                if not any_recording:
+                    for model_id in list(self.keep_warm_models & self.loaded_models):
+                        last_warm_up = self.last_warm_up_time.get(model_id, 0)
+                        if current_time - last_warm_up >= warm_up_interval:
+                            engine = self.engines.get(model_id)
+                            if engine and engine.is_loaded and hasattr(engine, 'warm_up'):
+                                logger.info(f"Running warm-up inference for {model_id}")
+                                loop = asyncio.get_event_loop()
+                                await loop.run_in_executor(None, engine.warm_up)
+                                self.last_warm_up_time[model_id] = time.time()
 
             except asyncio.CancelledError:
                 logger.info("Keep-warm monitor cancelled")

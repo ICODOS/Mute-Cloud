@@ -326,6 +326,18 @@ class ASREngine:
 
             logger.info("ASR model unloaded successfully")
 
+    def warm_up(self):
+        """Run a tiny inference to keep model weights in active GPU memory."""
+        if not self.is_loaded or self.model is None:
+            return
+        try:
+            silence = np.zeros(8000, dtype=np.float32)  # 0.5s of silence
+            with torch.inference_mode():
+                self.model.transcribe([silence], batch_size=1)
+            logger.info("Model warm-up inference completed")
+        except Exception as e:
+            logger.warning(f"Warm-up inference failed: {e}")
+
 
 class MockASREngine:
     """

@@ -705,7 +705,7 @@ struct MainAppView: View {
 
                 Spacer()
 
-                Text("v1.0")
+                Text("v1.3.0")
                     .font(.system(size: 10))
                     .foregroundColor(Color(NSColor.tertiaryLabelColor))
             }

@@ -5,18 +5,31 @@ All notable changes to Mute will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.3.0] - 2026-01-23
 
 ### Added
+- Redesigned overlay indicator with frosted glass backdrop, animated gradient ring, and soft glow effects
+- GPU warm-up inference to prevent MPS stale state after long idle periods
+- Background model loading (server starts immediately, models load asynchronously)
 - Audio device change monitoring with real-time updates in Settings
 - Automatic fallback to default microphone when selected device disconnects
 - Backend audio watchdog (auto-stops recording if no audio received within 5s)
 - Proper cleanup when recording fails (cancels backend task, stops transcription)
 
 ### Fixed
+- App crash from concurrent backend restarts racing on port (added `isRestarting` guard)
+- Backend reconnect counter never resetting, preventing recovery after legitimate restarts
+- Backend server blocked by model loading, causing WebSocket connection timeout
+- Fallback whisper model list showing unavailable models (small, medium removed)
 - App crash/freeze when Bluetooth headset disconnects during recording
 - Settings not updating when audio devices connect/disconnect
 - Selected device not resetting to "System Default" when device is removed
+
+### Changed
+- Overlay indicator uses multi-layered glow, radial gradient base, and directional highlight bezel
+- Recording indicator shows rounded-square stop icon with rotating gradient comet ring
+- Processing indicator shows waveform icon with fast-spinning gradient ring
+- Done/error indicators animate in with spring physics and sequenced reveals
 
 ## [0.9.0-beta.1] - 2026-01-20
 
@@ -59,9 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## Version History
 
-### Pre-release Versions
+### Release Versions
+- `1.3.0` - Overlay redesign, stability fixes (GPU warm-up, concurrent restart guard)
+- `1.2.0` - Cloud transcription with Groq Whisper V3 Turbo
 - `0.9.x` - Beta releases, feature complete, testing phase
-- `1.0.0` - First stable public release (planned)
 
 ### Versioning Scheme
 - **MAJOR.MINOR.PATCH** following [Semantic Versioning](https://semver.org/)

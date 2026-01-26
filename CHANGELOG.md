@@ -5,6 +5,24 @@ All notable changes to Mute will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-01-26
+
+### Added
+- Adaptive processing timeout based on recording duration (minimum 30s or 1.5x audio length)
+- Backend sends `transcription_started` message for better progress tracking
+- Graceful recording stop at 4:55 (before 5-minute limit) with automatic transcription
+- New `recording_stopping` message type for clean max-duration handling
+
+### Fixed
+- FFmpeg library conflict with Homebrew causing random crashes (removed unused `faster_whisper` and `av` packages)
+- 15-second processing timeout too aggressive for longer recordings
+- Recording hitting 5-minute limit showed error instead of transcribing gracefully
+
+### Changed
+- Recording overlay animation: faster rotation (1.2s vs 2.5s), shorter arc (35% vs 65%) for snappier feel
+- Processing overlay animation: consistent style with recording, slightly faster (0.8s)
+- Both indicators now use 2.5pt line width for better visibility
+
 ## [1.3.0] - 2026-01-23
 
 ### Added
@@ -73,6 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## Version History
 
 ### Release Versions
+- `1.3.1` - Stability fixes (FFmpeg conflict, adaptive timeout), improved animations
 - `1.3.0` - Overlay redesign, stability fixes (GPU warm-up, concurrent restart guard)
 - `1.2.0` - Cloud transcription with Groq Whisper V3 Turbo
 - `0.9.x` - Beta releases, feature complete, testing phase

@@ -19,6 +19,7 @@ class BackendManager: ObservableObject {
     var onIntervalTranscription: ((String) -> Void)?  // Just the new text to append
     var onError: ((String) -> Void)?
     var onRecordingReady: ((String) -> Void)?  // Called when backend is ready to receive audio
+    var onRecordingStopping: ((String) -> Void)?  // Called when recording auto-stops (e.g., max duration)
 
     private var process: Process?
     private var webSocketTask: URLSessionWebSocketTask?
@@ -274,6 +275,20 @@ class BackendManager: ObservableObject {
             env["PYTHONPATH"] = sitePackages
             Logger.shared.log("Set VIRTUAL_ENV to: \(venvDir)")
             Logger.shared.log("Set PYTHONPATH to: \(sitePackages)")
+
+            // Prevent FFmpeg library conflicts with Homebrew's FFmpeg
+            // TorchAudio/PyAV bundle FFmpeg 6.x libraries, but Homebrew may have FFmpeg 7.x
+            // This causes "Class AVFFrameReceiver implemented in both" crashes on macOS
+            env["TORIO_USE_FFMPEG_VERSION"] = "6"
+
+            // Prioritize venv libraries over system libraries to avoid conflicts
+            let venvLib = "\(venvDir)/lib"
+            if let existingDyldPath = env["DYLD_LIBRARY_PATH"] {
+                env["DYLD_LIBRARY_PATH"] = "\(venvLib):\(existingDyldPath)"
+            } else {
+                env["DYLD_LIBRARY_PATH"] = venvLib
+            }
+            Logger.shared.log("Set FFmpeg isolation: TORIO_USE_FFMPEG_VERSION=6, DYLD_LIBRARY_PATH=\(venvLib)")
         }
 
         process?.environment = env
@@ -521,6 +536,20 @@ class BackendManager: ObservableObject {
             if let partialText = json["text"] as? String {
                 onPartialTranscription?(partialText)
             }
+
+        case "transcription_started":
+            // Backend started processing - logged for debugging
+            let audioDuration = json["audio_duration"] as? Double ?? 0
+            let model = json["model"] as? String ?? "unknown"
+            Logger.shared.log(String(format: "Backend started transcription: %.1fs audio with %@", audioDuration, model))
+
+        case "recording_stopping":
+            // Recording auto-stopped due to max duration - transcription will follow
+            let reason = json["reason"] as? String ?? "unknown"
+            let message = json["message"] as? String ?? "Recording stopped"
+            Logger.shared.log("Recording auto-stopped: \(reason) - \(message)", level: .info)
+            // Don't show error state - transcription will proceed normally
+            onRecordingStopping?(message)
 
         case "final":
             if let finalText = json["text"] as? String {

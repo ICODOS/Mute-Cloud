@@ -194,20 +194,20 @@ struct RecordingIndicator: View {
         ZStack {
             IndicatorBase(stateColor: StateColors.recording, glowIntensity: glowPulse)
 
-            // Rotating gradient ring
+            // Rotating gradient ring - shorter arc, faster rotation for snappy feel
             Circle()
-                .trim(from: 0, to: 0.65)
+                .trim(from: 0, to: 0.35)
                 .stroke(
                     AngularGradient(
                         gradient: Gradient(stops: [
                             .init(color: StateColors.recording.opacity(0.0), location: 0.0),
-                            .init(color: StateColors.recording.opacity(0.5), location: 0.3),
-                            .init(color: StateColors.recording, location: 0.6),
-                            .init(color: StateColors.recording.opacity(0.8), location: 0.65)
+                            .init(color: StateColors.recording.opacity(0.6), location: 0.15),
+                            .init(color: StateColors.recording, location: 0.3),
+                            .init(color: StateColors.recording.opacity(0.9), location: 0.35)
                         ]),
                         center: .center
                     ),
-                    style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
                 )
                 .frame(width: 42, height: 42)
                 .rotationEffect(.degrees(ringRotation))
@@ -225,11 +225,11 @@ struct RecordingIndicator: View {
             withAnimation(.spring(response: 0.4, dampingFraction: 0.65)) {
                 appeared = true
             }
-            withAnimation(.linear(duration: 2.5).repeatForever(autoreverses: false)) {
+            withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
                 ringRotation = 360
             }
-            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
-                dotScale = 0.82
+            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                dotScale = 0.85
                 glowPulse = 1.0
             }
         }
@@ -245,20 +245,20 @@ struct ProcessingIndicator: View {
         ZStack {
             IndicatorBase(stateColor: StateColors.processing, glowIntensity: 0.6)
 
-            // Fast spinning ring
+            // Fast spinning ring - consistent arc style with recording, but faster
             Circle()
-                .trim(from: 0, to: 0.55)
+                .trim(from: 0, to: 0.35)
                 .stroke(
                     AngularGradient(
                         gradient: Gradient(stops: [
                             .init(color: StateColors.processing.opacity(0.0), location: 0.0),
-                            .init(color: StateColors.processing.opacity(0.4), location: 0.2),
-                            .init(color: StateColors.processing, location: 0.5),
-                            .init(color: StateColors.processing.opacity(0.7), location: 0.55)
+                            .init(color: StateColors.processing.opacity(0.6), location: 0.15),
+                            .init(color: StateColors.processing, location: 0.3),
+                            .init(color: StateColors.processing.opacity(0.9), location: 0.35)
                         ]),
                         center: .center
                     ),
-                    style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
                 )
                 .frame(width: 42, height: 42)
                 .rotationEffect(.degrees(ringRotation))
@@ -275,7 +275,7 @@ struct ProcessingIndicator: View {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
                 appeared = true
             }
-            withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
+            withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
                 ringRotation = 360
             }
         }

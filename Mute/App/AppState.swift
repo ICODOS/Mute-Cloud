@@ -74,6 +74,7 @@ class AppState: ObservableObject {
 
     // MARK: - Processing Timeout
     private var processingTimeoutTask: Task<Void, Never>?
+    private var recordingStartTime: Date?
 
     // MARK: - Solution C: Parallel Audio/Backend Initialization
     // Thread-safe flag to track if backend is ready to receive audio data
@@ -330,6 +331,13 @@ class AppState: ObservableObject {
             }
         }
 
+        // Handle recording auto-stop (e.g., max duration reached)
+        backendManager.onRecordingStopping = { [weak self] message in
+            Task { @MainActor in
+                self?.handleRecordingStopping(message)
+            }
+        }
+
         // Handle interval transcriptions for continuous capture
         backendManager.onIntervalTranscription = { [weak self] text in
             Task { @MainActor in
@@ -438,6 +446,7 @@ class AppState: ObservableObject {
 
         // Update state to show we're preparing
         recordingState = .recording
+        recordingStartTime = Date()
 
         // Show overlay
         if showOverlay {
@@ -615,9 +624,17 @@ class AppState: ObservableObject {
         // Cancel any existing timeout task before starting a new one
         processingTimeoutTask?.cancel()
 
-        // Add timeout for processing state - if no response in 15 seconds, reset
+        // Calculate adaptive timeout based on recording duration
+        // Minimum 30 seconds, or 1.5x the recording duration (whichever is greater)
+        // This ensures longer recordings have enough time to process
+        let recordingDuration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 30.0
+        let timeoutSeconds = max(30.0, recordingDuration * 1.5)
+        let timeoutNanos = UInt64(timeoutSeconds * 1_000_000_000)
+        Logger.shared.log(String(format: "Processing timeout set to %.0f seconds for %.1f seconds of audio", timeoutSeconds, recordingDuration))
+
+        // Add timeout for processing state - adaptive based on recording length
         processingTimeoutTask = Task {
-            try? await Task.sleep(nanoseconds: 15_000_000_000) // 15 seconds
+            try? await Task.sleep(nanoseconds: timeoutNanos)
             guard !Task.isCancelled else { return }
             if recordingState == .processing {
                 Logger.shared.log("Processing timeout - backend may be unresponsive", level: .warning)
@@ -989,6 +1006,40 @@ class AppState: ObservableObject {
         }
     }
     
+    private func handleRecordingStopping(_ message: String) {
+        // Recording was auto-stopped (e.g., max duration reached)
+        // The backend will continue to transcribe, so transition to processing state
+        Logger.shared.log("Recording auto-stopped: \(message)")
+
+        // Stop audio capture (backend already stopped receiving)
+        audioManager.stopCapture()
+
+        // Transition to processing state (transcription is happening)
+        recordingState = .processing
+
+        if showOverlay {
+            overlayPanel?.show(state: .processing)
+        }
+
+        // Set up adaptive timeout based on recording duration
+        processingTimeoutTask?.cancel()
+        let recordingDuration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 300.0
+        let timeoutSeconds = max(30.0, recordingDuration * 1.5)
+        let timeoutNanos = UInt64(timeoutSeconds * 1_000_000_000)
+        Logger.shared.log(String(format: "Processing timeout set to %.0f seconds for %.1f seconds of audio", timeoutSeconds, recordingDuration))
+
+        processingTimeoutTask = Task {
+            try? await Task.sleep(nanoseconds: timeoutNanos)
+            guard !Task.isCancelled else { return }
+            if recordingState == .processing {
+                Logger.shared.log("Processing timeout - backend may be unresponsive", level: .warning)
+                recordingState = .error("Processing timeout - please try again")
+                overlayPanel?.show(state: .error)
+                await backendManager.restart()
+            }
+        }
+    }
+
     private func handleError(_ error: String) {
         // Cancel any processing timeout
         processingTimeoutTask?.cancel()
@@ -1003,7 +1054,7 @@ class AppState: ObservableObject {
 
         // Stop audio if recording
         audioManager.stopCapture()
-        
+
         Logger.shared.log("Error: \(error)", level: .error)
     }
     

@@ -82,6 +82,7 @@ class ClientSession:
     # Memory limits
     MAX_BUFFER_SECONDS = 300  # 5 minutes max recording
     MAX_BUFFER_SAMPLES = 16000 * MAX_BUFFER_SECONDS  # ~19.2 million samples
+    GRACE_STOP_SECONDS = 295  # Stop gracefully at 4:55 to allow clean transcription
 
     def __init__(self, websocket, server: 'MuteServer'):
         self.websocket = websocket
@@ -94,6 +95,7 @@ class ClientSession:
         self.total_samples = 0  # Track total without concatenating
         self.current_settings = {}
         self._last_log_second = 0
+        self._grace_stop_initiated = False  # Track if graceful stop has been triggered
 
         # Model state for this session
         self.active_engine = None
@@ -611,6 +613,7 @@ class MuteServer:
             session.clear_audio()
             session.current_settings = settings
             session.has_done_first_interval = False
+            session._grace_stop_initiated = False  # Reset for new recording
 
             # Speaker diarization
             session.diarization_enabled = settings.get("enable_diarization", False)
@@ -690,13 +693,31 @@ class MuteServer:
             # Add to buffer with memory limit check
             async with session.lock:
                 if not session.add_audio(audio_samples):
-                    # Buffer full - stop recording
+                    # Buffer full - hard stop (shouldn't happen with grace stop)
                     logger.warning(f"[Session {session.session_id}] Buffer limit reached, stopping recording")
-                    await self.send_error(websocket, "Recording too long (max 5 minutes). Stopping.")
+                    if not session._grace_stop_initiated:
+                        session._grace_stop_initiated = True
+                        await websocket.send(json.dumps({
+                            "type": "recording_stopping",
+                            "reason": "max_duration",
+                            "message": "Maximum recording duration reached (5 minutes). Transcribing..."
+                        }))
                     await self.handle_stop(websocket, session)
                     return
 
                 buffer_seconds = session.get_buffer_seconds()
+
+                # Graceful stop at 4:55 to ensure clean transcription
+                if buffer_seconds >= ClientSession.GRACE_STOP_SECONDS and not session._grace_stop_initiated:
+                    session._grace_stop_initiated = True
+                    logger.info(f"[Session {session.session_id}] Approaching max duration ({buffer_seconds:.1f}s), stopping gracefully")
+                    await websocket.send(json.dumps({
+                        "type": "recording_stopping",
+                        "reason": "max_duration",
+                        "message": "Maximum recording duration reached (5 minutes). Transcribing..."
+                    }))
+                    await self.handle_stop(websocket, session)
+                    return
 
             # Log periodically (every ~2 seconds)
             if int(buffer_seconds) > 0 and int(buffer_seconds) != session._last_log_second:
@@ -728,8 +749,17 @@ class MuteServer:
                 # Get final transcription
                 if session.total_samples > 0 and session.active_engine:
                     audio_array = session.get_audio_array()
+                    audio_duration = len(audio_array) / 16000  # 16kHz sample rate
                     logger.info(f"[Session {session.session_id}] Transcribing {len(audio_array)} samples "
-                               f"with {session.active_model}")
+                               f"({audio_duration:.1f}s) with {session.active_model}")
+
+                    # Send transcription_started message so client knows we're working
+                    # This helps the client set appropriate timeouts
+                    await websocket.send(json.dumps({
+                        "type": "transcription_started",
+                        "audio_duration": audio_duration,
+                        "model": session.active_model
+                    }))
 
                     final_text = await session.active_engine.transcribe_final(audio_array)
 

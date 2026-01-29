@@ -165,8 +165,18 @@ class AppState: ObservableObject {
 
     // MARK: - Cloud Transcription
     let groqProvider = GroqWhisperProvider.shared
+    let groqChatProvider = GroqChatProvider.shared
     private var cloudAudioFileManager: AudioFileManager?
     private var cloudTranscriptionTask: Task<Void, Never>?
+
+    // MARK: - Transcription Modes
+    let modeManager = TranscriptionModeManager.shared
+
+    // MARK: - File Transcription State
+    @Published var isTranscribingFile: Bool = false
+    @Published var fileTranscriptionProgress: String = ""
+    @Published var fileTranscriptionProgressValue: Double = 0.0
+    @Published var fileTranscriptionCompleted: Bool = false
     
     // MARK: - Overlay
     weak var overlayPanel: OverlayPanel?
@@ -928,6 +938,48 @@ class AppState: ObservableObject {
         processingTimeoutTask?.cancel()
         processingTimeoutTask = nil
 
+        // Check if we need to apply a transformation (cloud mode only)
+        if transcriptionBackend == .groqWhisper,
+           let mode = modeManager.dictationMode,
+           mode.hasTransformation {
+            // Apply transformation before proceeding
+            Task {
+                await applyTransformationAndComplete(originalText: text, mode: mode)
+            }
+            return
+        }
+
+        // No transformation needed, proceed with the original text
+        completeTranscription(text)
+    }
+
+    /// Applies text transformation using Groq Chat and then completes the transcription
+    private func applyTransformationAndComplete(originalText: String, mode: TranscriptionMode) async {
+        // Update overlay to show transforming
+        if showOverlay {
+            overlayPanel?.show(state: .processing)
+        }
+
+        do {
+            Logger.shared.log("Applying transformation with mode: \(mode.name)")
+            let transformedText = try await groqChatProvider.transform(
+                text: originalText,
+                prompt: mode.prompt,
+                model: mode.modelId,
+                temperature: mode.temperature,
+                maxTokens: mode.maxTokens
+            )
+            Logger.shared.log("Transformation complete: \(transformedText.prefix(100))...")
+            completeTranscription(transformedText)
+        } catch {
+            Logger.shared.log("Transformation failed: \(error)", level: .error)
+            // Fall back to original text on error
+            completeTranscription(originalText)
+        }
+    }
+
+    /// Completes the transcription process with the final text
+    private func completeTranscription(_ text: String) {
         finalText = text
 
         // Handle capture mode differently - append to Notes instead of clipboard

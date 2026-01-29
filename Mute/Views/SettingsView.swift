@@ -6,38 +6,112 @@ import AppKit
 import AVFoundation
 import Carbon.HIToolbox
 
+// MARK: - Settings Tab Enum
+/// Represents the available tabs in the Settings window.
+/// Used by `SettingsTabCoordinator` to navigate to a specific tab programmatically.
+enum SettingsTab: Int, Hashable, CaseIterable {
+    case general = 0
+    case transcription = 1
+    case modes = 2
+    case model = 3
+    case advanced = 4
+    case about = 5
+}
+
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
+    @State private var selectedTab: SettingsTab = .general
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             GeneralSettingsTab()
                 .tabItem {
                     Label("General", systemImage: "gear")
                 }
+                .tag(SettingsTab.general)
 
             TranscriptionSettingsTab()
                 .tabItem {
                     Label("Transcription", systemImage: "waveform")
                 }
+                .tag(SettingsTab.transcription)
+
+            ModesSettingsTab()
+                .tabItem {
+                    Label("Modes", systemImage: "wand.and.stars")
+                }
+                .tag(SettingsTab.modes)
 
             EngineSettingsTab()
                 .tabItem {
                     Label("Model", systemImage: "cpu")
                 }
+                .tag(SettingsTab.model)
 
             AdvancedSettingsTab()
                 .tabItem {
                     Label("Advanced", systemImage: "wrench.and.screwdriver")
                 }
+                .tag(SettingsTab.advanced)
 
             AboutTab()
                 .tabItem {
                     Label("About", systemImage: "info.circle")
                 }
+                .tag(SettingsTab.about)
         }
         .frame(width: 520, height: 520)
         .environmentObject(appState)
+        .onAppear {
+            // Check if a specific tab was requested
+            if let requestedTab = SettingsTabCoordinator.shared.requestedTab {
+                selectedTab = requestedTab
+                SettingsTabCoordinator.shared.requestedTab = nil
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .settingsTabRequested)) { notification in
+            // Handle tab change requests while settings is already open
+            if let tab = notification.userInfo?["tab"] as? SettingsTab {
+                selectedTab = tab
+            }
+        }
+    }
+}
+
+// MARK: - Settings Tab Coordinator
+/// Coordinates which tab to show when the Settings window opens.
+///
+/// Works in conjunction with `SettingsCoordinator`:
+/// 1. `SettingsCoordinator.requestOpenSettings(tab:)` calls `requestTab(_:)` if a tab is specified
+/// 2. This stores the requested tab and posts a notification
+/// 3. `SettingsView.onAppear` reads `requestedTab` and selects it
+/// 4. If Settings is already open, the notification triggers tab selection via `.onReceive`
+///
+/// ## Usage
+/// Typically called via `SettingsCoordinator`, not directly:
+/// ```swift
+/// SettingsCoordinator.shared.requestOpenSettings(tab: .modes)
+/// ```
+@MainActor
+final class SettingsTabCoordinator {
+    static let shared = SettingsTabCoordinator()
+
+    /// The tab to select when Settings opens. Set to nil after being consumed.
+    var requestedTab: SettingsTab?
+
+    private init() {}
+
+    /// Requests that the Settings window show a specific tab.
+    /// - Parameter tab: The tab to display.
+    /// - Note: Also posts `.settingsTabRequested` notification for when Settings is already open.
+    func requestTab(_ tab: SettingsTab) {
+        requestedTab = tab
+        // Post notification in case Settings is already open
+        NotificationCenter.default.post(
+            name: .settingsTabRequested,
+            object: nil,
+            userInfo: ["tab": tab]
+        )
     }
 }
 
@@ -126,6 +200,10 @@ struct GeneralSettingsTab: View {
                                 Spacer()
                                 StopHotkeyButton()
                             }
+
+                            Divider()
+
+                            ModesHotkeyRow()
                         }
                     }
                 }
@@ -474,6 +552,251 @@ struct StopHotkeyButton: View {
         if let monitor = keyDownMonitor {
             NSEvent.removeMonitor(monitor)
             keyDownMonitor = nil
+        }
+    }
+}
+
+// MARK: - Modes Hotkey Row
+struct ModesHotkeyRow: View {
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Open Modes Settings")
+                    .font(.system(size: 13, weight: .medium))
+                Text("Quick access to transcription modes")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+
+            ModesHotkeyButton()
+        }
+    }
+}
+
+// MARK: - Modes Hotkey Button
+struct ModesHotkeyButton: View {
+    @State private var isRecording = false
+    @State private var hotkeyConfig = ModesHotkeyConfig.load()
+    @State private var keyDownMonitor: Any?
+    @State private var flagsMonitor: Any?
+    @State private var lastFlags: NSEvent.ModifierFlags = []
+    // For two-key combo recording
+    @State private var firstModifierKeyCode: UInt16? = nil
+    @State private var recordingHint: String = "Press key or combo..."
+
+    var body: some View {
+        Button(action: {
+            if isRecording {
+                stopRecording()
+            } else {
+                startRecording()
+            }
+        }) {
+            HStack(spacing: 8) {
+                if isRecording {
+                    Image(systemName: "keyboard")
+                        .foregroundColor(.white)
+                    Text(recordingHint)
+                        .foregroundColor(.white)
+                } else {
+                    Text(hotkeyConfig.displayString)
+                        .fontWeight(.medium)
+                        .font(.system(size: 13, design: .rounded))
+
+                    // Integrated clear button
+                    if hotkeyConfig.isEnabled {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary.opacity(0.7))
+                            .onTapGesture {
+                                ModesHotkeyConfig.clear()
+                                hotkeyConfig = ModesHotkeyConfig.load()
+                            }
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .frame(minWidth: 120)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isRecording ? Color.accentColor : Color(NSColor.controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isRecording ? Color.accentColor : Color.gray.opacity(0.3), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func startRecording() {
+        isRecording = true
+        lastFlags = NSEvent.modifierFlags
+        firstModifierKeyCode = nil
+        recordingHint = "Press key or combo..."
+
+        keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let keyCode = event.keyCode
+
+            // Escape cancels recording (without modifiers)
+            if keyCode == UInt16(kVK_Escape) && modifiers.isEmpty {
+                self.stopRecording()
+                return nil
+            }
+
+            // Skip if it's just a modifier key (handled by flagsMonitor)
+            let modifierKeyCodes: Set<UInt16> = [
+                UInt16(kVK_Shift), UInt16(kVK_RightShift),
+                UInt16(kVK_Command), UInt16(kVK_RightCommand),
+                UInt16(kVK_Option), UInt16(kVK_RightOption),
+                UInt16(kVK_Control), UInt16(kVK_RightControl),
+                UInt16(kVK_Function), UInt16(kVK_CapsLock)
+            ]
+            if modifierKeyCodes.contains(keyCode) {
+                return event
+            }
+
+            // Record the key + modifiers
+            let newConfig = ModesHotkeyConfig(
+                keyCode: keyCode,
+                secondKeyCode: 0,
+                command: modifiers.contains(.command),
+                option: modifiers.contains(.option),
+                control: modifiers.contains(.control),
+                shift: modifiers.contains(.shift),
+                isModifierOnly: false,
+                isTwoKeyCombo: false
+            )
+
+            newConfig.save()
+            self.hotkeyConfig = newConfig
+            self.stopRecording()
+
+            return nil
+        }
+
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            let keyCode = event.keyCode
+            let currentFlags = event.modifierFlags
+
+            // Check if this is a modifier key
+            let modifierKeyCodes: Set<UInt16> = [
+                UInt16(kVK_Shift), UInt16(kVK_RightShift),
+                UInt16(kVK_Command), UInt16(kVK_RightCommand),
+                UInt16(kVK_Option), UInt16(kVK_RightOption),
+                UInt16(kVK_Control), UInt16(kVK_RightControl),
+                UInt16(kVK_Function), UInt16(kVK_CapsLock)
+            ]
+
+            guard modifierKeyCodes.contains(keyCode) else {
+                self.lastFlags = currentFlags
+                return event
+            }
+
+            let isKeyDown = self.isModifierKeyDown(keyCode: keyCode, currentFlags: currentFlags)
+            self.lastFlags = currentFlags
+
+            if isKeyDown {
+                if let firstKey = self.firstModifierKeyCode {
+                    // Second modifier pressed - record as two-key combo
+                    if keyCode != firstKey {
+                        let newConfig = ModesHotkeyConfig(
+                            keyCode: firstKey,
+                            secondKeyCode: keyCode,
+                            command: false,
+                            option: false,
+                            control: false,
+                            shift: false,
+                            isModifierOnly: false,
+                            isTwoKeyCombo: true
+                        )
+
+                        newConfig.save()
+                        self.hotkeyConfig = newConfig
+                        self.stopRecording()
+                        return nil
+                    }
+                } else {
+                    // First modifier pressed - wait for second or use as single
+                    self.firstModifierKeyCode = keyCode
+                    self.recordingHint = "\(self.modifierName(keyCode)) + ..."
+
+                    // Schedule a delayed save for single modifier if no second key pressed
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        // Only save if still recording and no second key was pressed
+                        if self.isRecording && self.firstModifierKeyCode == keyCode {
+                            let newConfig = ModesHotkeyConfig(
+                                keyCode: keyCode,
+                                secondKeyCode: 0,
+                                command: false,
+                                option: false,
+                                control: false,
+                                shift: false,
+                                isModifierOnly: true,
+                                isTwoKeyCombo: false
+                            )
+
+                            newConfig.save()
+                            self.hotkeyConfig = newConfig
+                            self.stopRecording()
+                        }
+                    }
+                }
+            }
+
+            return event
+        }
+    }
+
+    private func isModifierKeyDown(keyCode: UInt16, currentFlags: NSEvent.ModifierFlags) -> Bool {
+        switch keyCode {
+        case UInt16(kVK_Shift), UInt16(kVK_RightShift):
+            return currentFlags.contains(.shift) && !lastFlags.contains(.shift)
+        case UInt16(kVK_Command), UInt16(kVK_RightCommand):
+            return currentFlags.contains(.command) && !lastFlags.contains(.command)
+        case UInt16(kVK_Option), UInt16(kVK_RightOption):
+            return currentFlags.contains(.option) && !lastFlags.contains(.option)
+        case UInt16(kVK_Control), UInt16(kVK_RightControl):
+            return currentFlags.contains(.control) && !lastFlags.contains(.control)
+        case UInt16(kVK_Function):
+            return currentFlags.contains(.function) && !lastFlags.contains(.function)
+        case UInt16(kVK_CapsLock):
+            return currentFlags.contains(.capsLock) && !lastFlags.contains(.capsLock)
+        default:
+            return false
+        }
+    }
+
+    private func modifierName(_ keyCode: UInt16) -> String {
+        switch keyCode {
+        case UInt16(kVK_RightShift): return "Right ⇧"
+        case UInt16(kVK_Shift): return "Left ⇧"
+        case UInt16(kVK_RightCommand): return "Right ⌘"
+        case UInt16(kVK_Command): return "Left ⌘"
+        case UInt16(kVK_RightOption): return "Right ⌥"
+        case UInt16(kVK_Option): return "Left ⌥"
+        case UInt16(kVK_RightControl): return "Right ⌃"
+        case UInt16(kVK_Control): return "Left ⌃"
+        case UInt16(kVK_Function): return "Fn"
+        case UInt16(kVK_CapsLock): return "⇪ Caps"
+        default: return "Key"
+        }
+    }
+
+    private func stopRecording() {
+        isRecording = false
+        firstModifierKeyCode = nil
+        recordingHint = "Press key or combo..."
+        if let monitor = keyDownMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyDownMonitor = nil
+        }
+        if let monitor = flagsMonitor {
+            NSEvent.removeMonitor(monitor)
+            flagsMonitor = nil
         }
     }
 }
@@ -1514,11 +1837,11 @@ struct AboutTab: View {
                     Text("Mute")
                         .font(.system(size: 24, weight: .bold))
 
-                    Text("Version 1.3.0")
+                    Text("Version 1.4.0")
                         .font(.system(size: 13))
                         .foregroundColor(.secondary)
 
-                    Text("Speech-to-text with local and cloud transcription")
+                    Text("Speech to Text Productivity Engine")
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
                 }
@@ -1596,6 +1919,753 @@ struct LicenseRow: View {
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.secondary)
         }
+    }
+}
+
+// MARK: - Modes Settings Tab
+struct ModesSettingsTab: View {
+    @EnvironmentObject var appState: AppState
+    @ObservedObject private var modeManager = TranscriptionModeManager.shared
+    @State private var showingModeEditor = false
+    @State private var editingMode: TranscriptionMode?
+
+    private var isCloudMode: Bool {
+        TranscriptionBackend(rawValue: appState.transcriptionBackendRaw) == .groqWhisper
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // Cloud mode notice
+                if !isCloudMode {
+                    cloudModeNotice
+                }
+
+                // Quick Dictation Mode Section
+                VStack(alignment: .leading, spacing: 10) {
+                    SettingsSectionHeader(title: "Quick Dictation Mode", icon: "mic.fill", iconColor: .blue)
+
+                    SettingsCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Transform Mode")
+                                        .font(.system(size: 13, weight: .medium))
+                                    Text("Applied when using hotkey dictation")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Picker("", selection: Binding(
+                                    get: { modeManager.dictationModeId },
+                                    set: { modeManager.setDictationMode($0) }
+                                )) {
+                                    Text("None").tag(nil as UUID?)
+                                    ForEach(modeManager.modes.filter { !$0.isBuiltIn }) { mode in
+                                        Text(mode.name).tag(mode.id as UUID?)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .frame(width: 160)
+                            }
+                        }
+                    }
+                    .disabled(!isCloudMode)
+                    .opacity(isCloudMode ? 1.0 : 0.6)
+                }
+
+                // Audio File Transcription Mode Section
+                VStack(alignment: .leading, spacing: 10) {
+                    SettingsSectionHeader(title: "Audio File Mode", icon: "waveform.badge.plus", iconColor: .green)
+
+                    SettingsCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Transform Mode")
+                                        .font(.system(size: 13, weight: .medium))
+                                    Text("Applied when transcribing audio files")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Picker("", selection: Binding(
+                                    get: { modeManager.fileTranscriptionModeId },
+                                    set: { modeManager.setFileTranscriptionMode($0) }
+                                )) {
+                                    Text("None").tag(nil as UUID?)
+                                    ForEach(modeManager.modes.filter { !$0.isBuiltIn }) { mode in
+                                        Text(mode.name).tag(mode.id as UUID?)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .frame(width: 160)
+                            }
+                        }
+                    }
+                    .disabled(!isCloudMode)
+                    .opacity(isCloudMode ? 1.0 : 0.6)
+                }
+
+                // Your Modes Section
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        SettingsSectionHeader(title: "Your Modes", icon: "list.bullet.rectangle", iconColor: .purple)
+                        Spacer()
+                        if !modeManager.modes.filter({ !$0.isBuiltIn }).isEmpty {
+                            Text("Drag to reorder")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    SettingsCard {
+                        VStack(alignment: .leading, spacing: 0) {
+                            let userModes = modeManager.modes.filter { !$0.isBuiltIn }
+
+                            if userModes.isEmpty {
+                                HStack {
+                                    Image(systemName: "wand.and.stars")
+                                        .font(.system(size: 14))
+                                        .foregroundColor(.secondary)
+                                    Text("No modes created yet")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.vertical, 8)
+                            } else {
+                                ReorderableModeList(
+                                    modes: userModes,
+                                    dictationModeId: modeManager.dictationModeId,
+                                    fileTranscriptionModeId: modeManager.fileTranscriptionModeId,
+                                    onEdit: { mode in
+                                        editingMode = mode
+                                        showingModeEditor = true
+                                    },
+                                    onDelete: { mode in
+                                        modeManager.deleteMode(id: mode.id)
+                                    },
+                                    onMove: { source, destination in
+                                        modeManager.moveModes(from: source, to: destination)
+                                    }
+                                )
+                            }
+
+                            Divider()
+                                .padding(.vertical, 8)
+
+                            // Add Mode button
+                            Button(action: {
+                                editingMode = nil
+                                showingModeEditor = true
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "plus.circle.fill")
+                                        .font(.system(size: 14))
+                                        .foregroundColor(.accentColor)
+                                    Text("Add Mode")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundColor(.accentColor)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!isCloudMode)
+                        }
+                    }
+                    .opacity(isCloudMode ? 1.0 : 0.6)
+                }
+
+                // How Modes Work Section
+                VStack(alignment: .leading, spacing: 10) {
+                    SettingsSectionHeader(title: "How Modes Work", icon: "questionmark.circle", iconColor: .blue)
+
+                    SettingsCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .top, spacing: 10) {
+                                Text("1.")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(.accentColor)
+                                Text("Record audio as usual with your hotkey")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.secondary)
+                            }
+
+                            HStack(alignment: .top, spacing: 10) {
+                                Text("2.")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(.accentColor)
+                                Text("Groq Whisper transcribes your speech to text")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.secondary)
+                            }
+
+                            HStack(alignment: .top, spacing: 10) {
+                                Text("3.")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(.accentColor)
+                                Text("The selected mode's GPT model transforms the text using your prompt")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.secondary)
+                            }
+
+                            HStack(alignment: .top, spacing: 10) {
+                                Text("4.")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(.accentColor)
+                                Text("Transformed text is pasted into your app")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(20)
+        }
+        .sheet(isPresented: $showingModeEditor) {
+            ModeEditorSheet(
+                mode: editingMode,
+                onSave: { name, prompt, modelId, temperature, maxTokens in
+                    if let existingMode = editingMode {
+                        modeManager.updateMode(
+                            id: existingMode.id,
+                            name: name,
+                            prompt: prompt,
+                            modelId: modelId,
+                            temperature: temperature,
+                            maxTokens: maxTokens
+                        )
+                    } else {
+                        modeManager.createMode(
+                            name: name,
+                            prompt: prompt,
+                            modelId: modelId,
+                            temperature: temperature,
+                            maxTokens: maxTokens
+                        )
+                    }
+                    showingModeEditor = false
+                },
+                onCancel: {
+                    showingModeEditor = false
+                }
+            )
+        }
+    }
+
+    private var cloudModeNotice: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "cloud.fill")
+                .font(.system(size: 14))
+                .foregroundColor(.blue)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Cloud Mode Required")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Modes use Groq's GPT models and require Cloud transcription mode.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            Button("Enable Cloud") {
+                appState.transcriptionBackendRaw = TranscriptionBackend.groqWhisper.rawValue
+            }
+            .font(.system(size: 11, weight: .medium))
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.blue.opacity(0.1))
+        )
+    }
+}
+
+// MARK: - Reorderable Mode List
+struct ReorderableModeList: View {
+    let modes: [TranscriptionMode]
+    let dictationModeId: UUID?
+    let fileTranscriptionModeId: UUID?
+    let onEdit: (TranscriptionMode) -> Void
+    let onDelete: (TranscriptionMode) -> Void
+    let onMove: (IndexSet, Int) -> Void
+
+    var body: some View {
+        ForEach(Array(modes.enumerated()), id: \.element.id) { index, mode in
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    // Drag handle
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary.opacity(0.5))
+                        .frame(width: 20)
+
+                    // Mode content
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(mode.name)
+                            .font(.system(size: 13, weight: .medium))
+
+                        HStack(spacing: 6) {
+                            Text(TransformationModel(rawValue: mode.modelId)?.displayName ?? mode.modelId)
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+
+                            if mode.id == dictationModeId {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "mic.fill")
+                                        .font(.system(size: 8))
+                                    Text("Dictation")
+                                        .font(.system(size: 9, weight: .medium))
+                                }
+                                .foregroundColor(.blue)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.blue.opacity(0.1))
+                                .cornerRadius(4)
+                            }
+
+                            if mode.id == fileTranscriptionModeId {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "waveform")
+                                        .font(.system(size: 8))
+                                    Text("Audio File")
+                                        .font(.system(size: 9, weight: .medium))
+                                }
+                                .foregroundColor(.green)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.green.opacity(0.1))
+                                .cornerRadius(4)
+                            }
+                        }
+                    }
+
+                    Spacer()
+
+                    // Edit button
+                    Button(action: { onEdit(mode) }) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+
+                    // Delete button
+                    Button(action: { onDelete(mode) }) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12))
+                            .foregroundColor(.red.opacity(0.7))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+                .draggable(mode.id.uuidString) {
+                    // Drag preview
+                    HStack {
+                        Image(systemName: "line.3.horizontal")
+                        Text(mode.name)
+                    }
+                    .padding(8)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(6)
+                }
+                .dropDestination(for: String.self) { items, _ in
+                    guard let droppedId = items.first,
+                          let droppedUUID = UUID(uuidString: droppedId),
+                          let sourceIndex = modes.firstIndex(where: { $0.id == droppedUUID }),
+                          sourceIndex != index else {
+                        return false
+                    }
+                    onMove(IndexSet(integer: sourceIndex), index > sourceIndex ? index + 1 : index)
+                    return true
+                }
+
+                if index < modes.count - 1 {
+                    Divider()
+                        .padding(.leading, 28)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Mode List Row
+struct ModeListRow: View {
+    let mode: TranscriptionMode
+    let isActiveDictation: Bool
+    let isActiveFileTranscription: Bool
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+
+    private var modelDisplayName: String {
+        TransformationModel(rawValue: mode.modelId)?.displayName ?? mode.modelId
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(mode.name)
+                    .font(.system(size: 13, weight: .medium))
+
+                HStack(spacing: 6) {
+                    Text(modelDisplayName)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+
+                    // Active indicators
+                    if isActiveDictation {
+                        HStack(spacing: 3) {
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 8))
+                            Text("Dictation")
+                                .font(.system(size: 9, weight: .medium))
+                        }
+                        .foregroundColor(.blue)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.blue.opacity(0.1))
+                        .cornerRadius(4)
+                    }
+
+                    if isActiveFileTranscription {
+                        HStack(spacing: 3) {
+                            Image(systemName: "waveform")
+                                .font(.system(size: 8))
+                            Text("Audio File")
+                                .font(.system(size: 9, weight: .medium))
+                        }
+                        .foregroundColor(.green)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.green.opacity(0.1))
+                        .cornerRadius(4)
+                    }
+                }
+            }
+
+            Spacer()
+
+            // Edit button
+            Button(action: onEdit) {
+                Image(systemName: "pencil")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+
+            // Delete button
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.system(size: 12))
+                    .foregroundColor(.red.opacity(0.7))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Mode Editor Sheet
+struct ModeEditorSheet: View {
+    let mode: TranscriptionMode?
+    let onSave: (String, String, String, Double, Int) -> Void
+    let onCancel: () -> Void
+
+    @State private var name: String = ""
+    @State private var prompt: String = ""
+    @State private var selectedModel: TransformationModel = .gptOss20b
+    @State private var selectedTemperature: TemperaturePreset = .creative
+    @State private var selectedMaxTokens: MaxTokensPreset = .long
+    @State private var showAdvanced: Bool = false
+
+    private var isEditing: Bool {
+        mode != nil
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty &&
+        !prompt.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isEditing ? "Edit Mode" : "New Mode")
+                        .font(.system(size: 16, weight: .semibold))
+                    Text("Configure how your transcription will be transformed")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                Button(action: onCancel) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(.secondary.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .contentShape(Circle())
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // Name field
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Name", systemImage: "textformat")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.primary)
+
+                        TextField("e.g., Meeting Notes, Email Polish", text: $name)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13))
+                            .padding(10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color(NSColor.textBackgroundColor))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                            )
+                    }
+
+                    // Model picker
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Model", systemImage: "cpu")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.primary)
+
+                        HStack(spacing: 10) {
+                            ForEach(TransformationModel.allCases.filter { $0 != .none }) { model in
+                                ModelSelectionCard(
+                                    model: model,
+                                    isSelected: selectedModel == model,
+                                    action: { selectedModel = model }
+                                )
+                            }
+                        }
+                    }
+
+                    // Prompt field
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Prompt", systemImage: "text.bubble")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.primary)
+
+                        TextEditor(text: $prompt)
+                            .font(.system(size: 12))
+                            .frame(height: 80)
+                            .padding(8)
+                            .background(Color(NSColor.textBackgroundColor))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                            )
+
+                        Text("Describe how to transform the text. E.g., \"Format as bullet points\" or \"Correct grammar and make professional\"")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 2)
+                    }
+
+                    // Advanced Settings
+                    VStack(alignment: .leading, spacing: 12) {
+                        Button(action: { withAnimation(.easeInOut(duration: 0.2)) { showAdvanced.toggle() } }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: showAdvanced ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 12)
+
+                                Text("Advanced Settings")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.primary)
+
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.plain)
+
+                        if showAdvanced {
+                            VStack(spacing: 14) {
+                                // Temperature
+                                HStack(alignment: .top) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("Temperature")
+                                            .font(.system(size: 12, weight: .medium))
+                                        Text("Controls output consistency")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.secondary)
+                                    }
+
+                                    Spacer()
+
+                                    Picker("", selection: $selectedTemperature) {
+                                        ForEach(TemperaturePreset.allCases) { preset in
+                                            Text(preset.displayName).tag(preset)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .frame(width: 130)
+                                }
+
+                                Divider()
+
+                                // Max Tokens
+                                HStack(alignment: .top) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("Max Length")
+                                            .font(.system(size: 12, weight: .medium))
+                                        Text("Maximum response length")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.secondary)
+                                    }
+
+                                    Spacer()
+
+                                    Picker("", selection: $selectedMaxTokens) {
+                                        ForEach(MaxTokensPreset.allCases) { preset in
+                                            Text(preset.displayName).tag(preset)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .frame(width: 130)
+                                }
+                            }
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color(NSColor.controlBackgroundColor))
+                            )
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+                    }
+                }
+                .padding(20)
+            }
+
+            Divider()
+
+            // Footer buttons
+            HStack(spacing: 12) {
+                Button(action: onCancel) {
+                    Text("Cancel")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 80)
+                }
+                .keyboardShortcut(.escape)
+                .buttonStyle(.plain)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 16)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(NSColor.controlBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                )
+
+                Spacer()
+
+                Button(action: {
+                    onSave(
+                        name.trimmingCharacters(in: .whitespaces),
+                        prompt.trimmingCharacters(in: .whitespaces),
+                        selectedModel.rawValue,
+                        selectedTemperature.rawValue,
+                        selectedMaxTokens.rawValue
+                    )
+                }) {
+                    Text(isEditing ? "Save Changes" : "Create Mode")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 110)
+                }
+                .keyboardShortcut(.return)
+                .disabled(!canSave)
+                .buttonStyle(.plain)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 16)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(canSave ? Color.accentColor : Color.gray.opacity(0.3))
+                )
+            }
+            .padding(16)
+        }
+        .frame(width: 440, height: 520)
+        .background(Color(NSColor.windowBackgroundColor))
+        .onAppear {
+            if let mode = mode {
+                name = mode.name
+                prompt = mode.prompt
+                selectedModel = TransformationModel(rawValue: mode.modelId) ?? .gptOss20b
+                selectedTemperature = TemperaturePreset.closest(to: mode.temperature)
+                selectedMaxTokens = MaxTokensPreset.closest(to: mode.maxTokens)
+            }
+        }
+    }
+}
+
+// MARK: - Model Selection Card
+struct ModelSelectionCard: View {
+    let model: TransformationModel
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Image(systemName: model == .gptOss20b ? "hare" : "tortoise")
+                        .font(.system(size: 14))
+                        .foregroundColor(isSelected ? .white : .accentColor)
+
+                    Spacer()
+
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(.white)
+                    }
+                }
+
+                Spacer()
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model == .gptOss20b ? "GPT OSS 20B" : "GPT OSS 120B")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(isSelected ? .white : .primary)
+
+                    Text(model == .gptOss20b ? "Faster" : "Higher Quality")
+                        .font(.system(size: 10))
+                        .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, minHeight: 70)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(isSelected ? Color.accentColor : Color(NSColor.controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isSelected ? Color.accentColor : Color.gray.opacity(0.2), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 

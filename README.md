@@ -4,7 +4,7 @@ A privacy-focused speech-to-text app for macOS with support for multiple ASR mod
 
 ![macOS](https://img.shields.io/badge/macOS-13.0+-blue)
 ![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1/M2/M3/M4-green)
-![Version](https://img.shields.io/badge/version-1.3.1-orange)
+![Version](https://img.shields.io/badge/version-1.4.0-orange)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ## Features
@@ -12,6 +12,7 @@ A privacy-focused speech-to-text app for macOS with support for multiple ASR mod
 ### Core Features
 - **Global Hotkey Activation** - Customizable hotkey to start/stop dictation
 - **Cancel Recording Hotkey** - Discard recording without transcription
+- **Modes Settings Hotkey** - Quick access to transcription modes (supports two-key combos like Left⇧ + Right⇧)
 - **Local Processing by Default** - All audio processed on-device, never sent to servers
 - **Optional Cloud Transcription** - Fast cloud transcription via Groq Whisper V3 Turbo
 - **Smart Text Insertion** - Automatically pastes transcribed text into any app
@@ -22,6 +23,13 @@ A privacy-focused speech-to-text app for macOS with support for multiple ASR mod
 - **NVIDIA Parakeet TDT v3** - Fast, multilingual (25 European languages), MPS-accelerated
 - **OpenAI Whisper** - Base and Large V3 Turbo with word-level timestamps
 - **Groq Whisper V3 Turbo** - Cloud-based, fast inference, requires API key
+
+### Transcription Modes (Cloud Mode)
+- **Custom Transformation Prompts** - Define how transcriptions should be transformed
+- **Model Selection** - Choose between GPT OSS 20B (faster) or 120B (higher quality)
+- **Temperature Control** - Adjust output consistency (Precise → Experimental)
+- **Max Length Settings** - Control response length up to 50,000 tokens
+- **Drag-and-Drop Reordering** - Organize modes in your preferred order
 
 ### Advanced Features
 - **Speaker Diarization** - Identify different speakers using pyannote.audio

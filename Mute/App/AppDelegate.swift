@@ -15,6 +15,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var stopLocalEventMonitor: Any?
     private var lastModifierState: NSEvent.ModifierFlags = []
     private var settingsWindow: NSWindow?
+
+    // Modes hotkey monitors
+    private var modesHotkeyGlobalMonitor: Any?
+    private var modesHotkeyLocalMonitor: Any?
+    private var modesLastModifierState: NSEvent.ModifierFlags = []
+    // For two-key combo detection
+    private var modesFirstKeyDown: Bool = false
+    private var modesSecondKeyDown: Bool = false
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Show app in Dock (regular app, not menu-bar-only)
@@ -23,6 +31,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Setup global hotkeys
         setupHotkey()
         setupStopHotkey()
+        setupModesHotkey()
 
         // Setup overlay panel
         setupOverlayPanel()
@@ -55,17 +64,84 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             name: .stopHotkeyDidChange,
             object: nil
         )
+
+        // Listen for settings open requests
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(openSettingsWindow),
+            name: .openSettingsRequested,
+            object: nil
+        )
+
+        // Listen for modes hotkey changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(modesHotkeyDidChange),
+            name: .modesHotkeyDidChange,
+            object: nil
+        )
     }
-    
+
+    @objc private func modesHotkeyDidChange() {
+        // Re-setup modes hotkey when it changes
+        removeModesHotkeyMonitors()
+        setupModesHotkey()
+    }
+
+    /// Opens the Settings window by programmatically invoking the Settings menu item.
+    ///
+    /// ## Why This Approach
+    /// On macOS 14+ with SwiftUI's `Settings` scene:
+    /// - `@Environment(\.openSettings)` doesn't work in MenuBarExtra/popover contexts
+    /// - `NSApp.sendAction(Selector(("showSettingsWindow:")))` doesn't connect to SwiftUI Settings
+    /// - The only reliable method is to find and invoke the "Settings…" menu item directly
+    ///
+    /// ## Flow
+    /// 1. Close any MenuBarExtra popups (they can interfere with settings opening)
+    /// 2. Activate the app (required for menu actions to work)
+    /// 3. Find the "Settings…" menu item in the app menu
+    /// 4. Invoke its action via `NSApp.sendAction`
+    ///
+    /// - Note: Called via `.openSettingsRequested` notification from `SettingsCoordinator`.
+    @objc private func openSettingsWindow() {
+        // Close any MenuBarExtra popup windows first (they can block settings from appearing)
+        for window in NSApp.windows {
+            let className = String(describing: type(of: window))
+            if className.contains("MenuBarExtra") || className.contains("_NSPopover") {
+                window.close()
+            }
+        }
+
+        // Activate app and open settings with a slight delay for proper window handling
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            // Find and invoke the Settings menu item action
+            if let mainMenu = NSApp.mainMenu,
+               let appMenuItem = mainMenu.items.first,
+               let appMenu = appMenuItem.submenu {
+                for item in appMenu.items {
+                    let title = item.title.lowercased()
+                    if title.contains("settings") || title.contains("preferences") {
+                        if let action = item.action {
+                            NSApp.sendAction(action, to: item.target, from: item)
+                        }
+                        return
+                    }
+                }
+            }
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         // Stop backend process
         AppState.shared.backendManager.stop()
-        
+
         // Clean up overlay
         overlayPanel?.close()
-        
+
         // Remove event monitors
         removeEventMonitors()
+        removeModesHotkeyMonitors()
     }
     
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -108,7 +184,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Mute App"
         window.styleMask = [.titled, .closable, .miniaturizable]
-        window.setContentSize(NSSize(width: 320, height: 480))
+        window.setContentSize(NSSize(width: 520, height: 760))
         window.center()
         window.isReleasedWhenClosed = false
 
@@ -198,6 +274,177 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         Logger.shared.log("Stop hotkey configured: \(config.displayString)")
+    }
+
+    // MARK: - Modes Hotkey (Left Shift + Right Shift)
+
+    /// Sets up the global hotkey for opening Settings to the Modes tab.
+    /// Users can configure any key combination they want.
+    private func setupModesHotkey() {
+        let config = ModesHotkeyConfig.load()
+
+        guard config.isEnabled else {
+            Logger.shared.log("Modes hotkey: None configured")
+            return
+        }
+
+        if config.isTwoKeyCombo || config.isModifierOnly {
+            // For two-key combos and modifier-only hotkeys, monitor flagsChanged events
+            modesHotkeyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                self?.checkModesTwoKeyOrModifierHotkey(event: event, config: config)
+            }
+            modesHotkeyLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                if self?.checkModesTwoKeyOrModifierHotkey(event: event, config: config) == true {
+                    return nil
+                }
+                return event
+            }
+        } else {
+            // For regular keys, monitor keyDown events
+            modesHotkeyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.checkModesHotkey(event: event, config: config)
+            }
+            modesHotkeyLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                if self?.checkModesHotkey(event: event, config: config) == true {
+                    return nil
+                }
+                return event
+            }
+        }
+
+        Logger.shared.log("Modes hotkey configured: \(config.displayString)")
+    }
+
+    private func removeModesHotkeyMonitors() {
+        if let monitor = modesHotkeyGlobalMonitor {
+            NSEvent.removeMonitor(monitor)
+            modesHotkeyGlobalMonitor = nil
+        }
+        if let monitor = modesHotkeyLocalMonitor {
+            NSEvent.removeMonitor(monitor)
+            modesHotkeyLocalMonitor = nil
+        }
+        modesLastModifierState = []
+        modesFirstKeyDown = false
+        modesSecondKeyDown = false
+    }
+
+    @discardableResult
+    private func checkModesTwoKeyOrModifierHotkey(event: NSEvent, config: ModesHotkeyConfig) -> Bool {
+        let keyCode = event.keyCode
+        let currentFlags = event.modifierFlags
+
+        if config.isTwoKeyCombo {
+            // Two-key combo detection (e.g., Left⇧ + Right⇧)
+            // Track each key independently
+            if keyCode == config.keyCode {
+                modesFirstKeyDown = isModifierKeyDown(keyCode: keyCode, currentFlags: currentFlags)
+            } else if keyCode == config.secondKeyCode {
+                modesSecondKeyDown = isModifierKeyDown(keyCode: keyCode, currentFlags: currentFlags)
+            }
+
+            // Reset if the relevant modifier is fully released
+            let relevantModifier = getModifierFlag(for: config.keyCode)
+            if !currentFlags.contains(relevantModifier) {
+                modesFirstKeyDown = false
+                modesSecondKeyDown = false
+            }
+
+            // Trigger when both keys are held
+            if modesFirstKeyDown && modesSecondKeyDown {
+                modesFirstKeyDown = false
+                modesSecondKeyDown = false
+                handleModesHotkeyPressed(config: config)
+                return true
+            }
+        } else {
+            // Single modifier-only hotkey
+            guard keyCode == config.keyCode else {
+                modesLastModifierState = currentFlags
+                return false
+            }
+
+            let isKeyDown = isModifierKeyDown(keyCode: keyCode, currentFlags: currentFlags, lastFlags: modesLastModifierState)
+            modesLastModifierState = currentFlags
+
+            if isKeyDown {
+                handleModesHotkeyPressed(config: config)
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func isModifierKeyDown(keyCode: UInt16, currentFlags: NSEvent.ModifierFlags, lastFlags: NSEvent.ModifierFlags? = nil) -> Bool {
+        let last = lastFlags ?? modesLastModifierState
+        switch keyCode {
+        case UInt16(kVK_Shift), UInt16(kVK_RightShift):
+            return currentFlags.contains(.shift) && (lastFlags == nil || !last.contains(.shift))
+        case UInt16(kVK_Command), UInt16(kVK_RightCommand):
+            return currentFlags.contains(.command) && (lastFlags == nil || !last.contains(.command))
+        case UInt16(kVK_Option), UInt16(kVK_RightOption):
+            return currentFlags.contains(.option) && (lastFlags == nil || !last.contains(.option))
+        case UInt16(kVK_Control), UInt16(kVK_RightControl):
+            return currentFlags.contains(.control) && (lastFlags == nil || !last.contains(.control))
+        case UInt16(kVK_Function):
+            return currentFlags.contains(.function) && (lastFlags == nil || !last.contains(.function))
+        case UInt16(kVK_CapsLock):
+            return currentFlags.contains(.capsLock) && (lastFlags == nil || !last.contains(.capsLock))
+        default:
+            return false
+        }
+    }
+
+    private func getModifierFlag(for keyCode: UInt16) -> NSEvent.ModifierFlags {
+        switch keyCode {
+        case UInt16(kVK_Shift), UInt16(kVK_RightShift):
+            return .shift
+        case UInt16(kVK_Command), UInt16(kVK_RightCommand):
+            return .command
+        case UInt16(kVK_Option), UInt16(kVK_RightOption):
+            return .option
+        case UInt16(kVK_Control), UInt16(kVK_RightControl):
+            return .control
+        case UInt16(kVK_Function):
+            return .function
+        case UInt16(kVK_CapsLock):
+            return .capsLock
+        default:
+            return []
+        }
+    }
+
+    @discardableResult
+    private func checkModesHotkey(event: NSEvent, config: ModesHotkeyConfig) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        // Check if key matches
+        guard event.keyCode == config.keyCode else { return false }
+
+        // Check modifiers
+        let hasCommand = modifiers.contains(.command)
+        let hasOption = modifiers.contains(.option)
+        let hasControl = modifiers.contains(.control)
+        let hasShift = modifiers.contains(.shift)
+
+        guard hasCommand == config.command,
+              hasOption == config.option,
+              hasControl == config.control,
+              hasShift == config.shift else {
+            return false
+        }
+
+        // Hotkey matched!
+        handleModesHotkeyPressed(config: config)
+        return true
+    }
+
+    private func handleModesHotkeyPressed(config: ModesHotkeyConfig) {
+        Task { @MainActor in
+            Logger.shared.log("Modes hotkey pressed (\(config.displayString)) - opening Settings to Modes tab")
+            SettingsCoordinator.shared.requestOpenSettings(tab: .modes)
+        }
     }
 
     @discardableResult
@@ -445,9 +692,150 @@ struct HotkeyConfig: Codable {
     }
 }
 
+// MARK: - Notification Names
 extension Notification.Name {
+    // MARK: Hotkey Notifications
+    /// Posted when the global hotkey configuration changes.
     static let hotkeyDidChange = Notification.Name("hotkeyDidChange")
+    /// Posted when the stop hotkey configuration changes.
     static let stopHotkeyDidChange = Notification.Name("stopHotkeyDidChange")
+    /// Posted when the modes hotkey (Left⇧ + Right⇧) configuration changes.
+    static let modesHotkeyDidChange = Notification.Name("modesHotkeyDidChange")
+
+    // MARK: Settings Notifications
+    /// Posted to request opening the Settings window.
+    /// Handled by `AppDelegate.openSettingsWindow()`.
+    /// - SeeAlso: `SettingsCoordinator.requestOpenSettings(tab:)`
+    static let openSettingsRequested = Notification.Name("openSettingsRequested")
+    /// Posted to request switching to a specific Settings tab.
+    /// UserInfo contains "tab" key with `SettingsTab` value.
+    /// - SeeAlso: `SettingsTabCoordinator.requestTab(_:)`
+    static let settingsTabRequested = Notification.Name("settingsTabRequested")
+}
+
+// MARK: - Modes Hotkey Configuration
+/// Configuration for the hotkey that opens Settings to the Modes tab.
+/// Supports single keys, key+modifiers, modifier-only, or two-key combinations.
+struct ModesHotkeyConfig: Codable {
+    var keyCode: UInt16
+    var secondKeyCode: UInt16  // For two-key combos (e.g., Left⇧ + Right⇧)
+    var command: Bool
+    var option: Bool
+    var control: Bool
+    var shift: Bool
+    var isModifierOnly: Bool
+    var isTwoKeyCombo: Bool
+
+    /// keyCode of 0 means no hotkey is configured
+    var isEnabled: Bool {
+        keyCode != 0
+    }
+
+    static let defaultConfig = ModesHotkeyConfig(
+        keyCode: 0,  // No hotkey by default
+        secondKeyCode: 0,
+        command: false,
+        option: false,
+        control: false,
+        shift: false,
+        isModifierOnly: false,
+        isTwoKeyCombo: false
+    )
+
+    static func load() -> ModesHotkeyConfig {
+        if let data = UserDefaults.standard.data(forKey: "modesHotkeyConfig"),
+           let config = try? JSONDecoder().decode(ModesHotkeyConfig.self, from: data) {
+            return config
+        }
+        return defaultConfig
+    }
+
+    func save() {
+        if let data = try? JSONEncoder().encode(self) {
+            UserDefaults.standard.set(data, forKey: "modesHotkeyConfig")
+            NotificationCenter.default.post(name: .modesHotkeyDidChange, object: nil)
+        }
+    }
+
+    static func clear() {
+        defaultConfig.save()
+    }
+
+    var displayString: String {
+        guard isEnabled else { return "None" }
+
+        if isTwoKeyCombo {
+            return "\(modifierKeyName(for: keyCode)) + \(modifierKeyName(for: secondKeyCode))"
+        }
+
+        if isModifierOnly {
+            return modifierKeyName(for: keyCode)
+        }
+
+        var parts: [String] = []
+        if control { parts.append("⌃") }
+        if option { parts.append("⌥") }
+        if shift { parts.append("⇧") }
+        if command { parts.append("⌘") }
+        parts.append(keyName(for: keyCode))
+        return parts.joined()
+    }
+
+    func modifierKeyName(for code: UInt16) -> String {
+        switch code {
+        case UInt16(kVK_RightShift): return "Right ⇧"
+        case UInt16(kVK_Shift): return "Left ⇧"
+        case UInt16(kVK_RightCommand): return "Right ⌘"
+        case UInt16(kVK_Command): return "Left ⌘"
+        case UInt16(kVK_RightOption): return "Right ⌥"
+        case UInt16(kVK_Option): return "Left ⌥"
+        case UInt16(kVK_RightControl): return "Right ⌃"
+        case UInt16(kVK_Control): return "Left ⌃"
+        case UInt16(kVK_Function): return "Fn"
+        case UInt16(kVK_CapsLock): return "⇪ Caps"
+        default: return "Modifier"
+        }
+    }
+
+    func keyName(for code: UInt16) -> String {
+        let keyNames: [UInt16: String] = [
+            UInt16(kVK_F1): "F1", UInt16(kVK_F2): "F2", UInt16(kVK_F3): "F3",
+            UInt16(kVK_F4): "F4", UInt16(kVK_F5): "F5", UInt16(kVK_F6): "F6",
+            UInt16(kVK_F7): "F7", UInt16(kVK_F8): "F8", UInt16(kVK_F9): "F9",
+            UInt16(kVK_F10): "F10", UInt16(kVK_F11): "F11", UInt16(kVK_F12): "F12",
+            UInt16(kVK_F13): "F13", UInt16(kVK_F14): "F14", UInt16(kVK_F15): "F15",
+            UInt16(kVK_F16): "F16", UInt16(kVK_F17): "F17", UInt16(kVK_F18): "F18",
+            UInt16(kVK_F19): "F19", UInt16(kVK_F20): "F20",
+            UInt16(kVK_Space): "Space", UInt16(kVK_Return): "Return",
+            UInt16(kVK_Tab): "Tab", UInt16(kVK_Delete): "Delete",
+            UInt16(kVK_ForwardDelete): "Fwd Del",
+            UInt16(kVK_Escape): "Esc", UInt16(kVK_Home): "Home",
+            UInt16(kVK_End): "End", UInt16(kVK_PageUp): "PgUp",
+            UInt16(kVK_PageDown): "PgDn",
+            UInt16(kVK_LeftArrow): "←", UInt16(kVK_RightArrow): "→",
+            UInt16(kVK_UpArrow): "↑", UInt16(kVK_DownArrow): "↓",
+            UInt16(kVK_ANSI_A): "A", UInt16(kVK_ANSI_B): "B", UInt16(kVK_ANSI_C): "C",
+            UInt16(kVK_ANSI_D): "D", UInt16(kVK_ANSI_E): "E", UInt16(kVK_ANSI_F): "F",
+            UInt16(kVK_ANSI_G): "G", UInt16(kVK_ANSI_H): "H", UInt16(kVK_ANSI_I): "I",
+            UInt16(kVK_ANSI_J): "J", UInt16(kVK_ANSI_K): "K", UInt16(kVK_ANSI_L): "L",
+            UInt16(kVK_ANSI_M): "M", UInt16(kVK_ANSI_N): "N", UInt16(kVK_ANSI_O): "O",
+            UInt16(kVK_ANSI_P): "P", UInt16(kVK_ANSI_Q): "Q", UInt16(kVK_ANSI_R): "R",
+            UInt16(kVK_ANSI_S): "S", UInt16(kVK_ANSI_T): "T", UInt16(kVK_ANSI_U): "U",
+            UInt16(kVK_ANSI_V): "V", UInt16(kVK_ANSI_W): "W", UInt16(kVK_ANSI_X): "X",
+            UInt16(kVK_ANSI_Y): "Y", UInt16(kVK_ANSI_Z): "Z",
+            UInt16(kVK_ANSI_0): "0", UInt16(kVK_ANSI_1): "1", UInt16(kVK_ANSI_2): "2",
+            UInt16(kVK_ANSI_3): "3", UInt16(kVK_ANSI_4): "4", UInt16(kVK_ANSI_5): "5",
+            UInt16(kVK_ANSI_6): "6", UInt16(kVK_ANSI_7): "7", UInt16(kVK_ANSI_8): "8",
+            UInt16(kVK_ANSI_9): "9",
+            UInt16(kVK_ANSI_Minus): "-", UInt16(kVK_ANSI_Equal): "=",
+            UInt16(kVK_ANSI_LeftBracket): "[", UInt16(kVK_ANSI_RightBracket): "]",
+            UInt16(kVK_ANSI_Semicolon): ";", UInt16(kVK_ANSI_Quote): "'",
+            UInt16(kVK_ANSI_Comma): ",", UInt16(kVK_ANSI_Period): ".",
+            UInt16(kVK_ANSI_Slash): "/", UInt16(kVK_ANSI_Backslash): "\\",
+            UInt16(kVK_ANSI_Grave): "`",
+        ]
+        return keyNames[code] ?? "Key \(code)"
+    }
 }
 
 // MARK: - Stop Hotkey Configuration

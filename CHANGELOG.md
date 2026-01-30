@@ -5,6 +5,22 @@ All notable changes to Mute will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] - 2026-01-30
+
+### Added
+- Rich text formatting for Apple Notes using HTML (headers, styled timestamps, horizontal rules)
+- Separate note formatting for Capture2Notes vs Audio File Transcription
+- LLM transformation output now renders as formatted HTML in Notes (for prompts that output HTML)
+
+### Fixed
+- Capture2Notes final transcription not being saved to note (race condition in stopCaptureMode)
+- Notes created but empty when continuous capture mode was disabled
+
+### Changed
+- Note structure now uses semantic HTML: `<h2>` headers, `<p>` paragraphs, `<hr>` separators
+- Timestamps displayed in gray, smaller text with italic styling for end markers
+- Transcription text properly escaped to prevent HTML injection
+
 ## [1.3.1] - 2026-01-26
 
 ### Added
@@ -91,6 +107,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## Version History
 
 ### Release Versions
+- `1.4.1` - Rich text formatting for Apple Notes, Capture2Notes fix
+- `1.4.0` - Configurable modes hotkey and enhanced mode editor
 - `1.3.1` - Stability fixes (FFmpeg conflict, adaptive timeout), improved animations
 - `1.3.0` - Overlay redesign, stability fixes (GPU warm-up, concurrent restart guard)
 - `1.2.0` - Cloud transcription with Groq Whisper V3 Turbo

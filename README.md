@@ -4,7 +4,7 @@ A privacy-focused speech-to-text app for macOS with support for multiple ASR mod
 
 ![macOS](https://img.shields.io/badge/macOS-13.0+-blue)
 ![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1/M2/M3/M4-green)
-![Version](https://img.shields.io/badge/version-1.4.0-orange)
+![Version](https://img.shields.io/badge/version-1.4.1-orange)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ## Features

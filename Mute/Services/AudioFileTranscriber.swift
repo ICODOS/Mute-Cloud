@@ -138,15 +138,16 @@ final class AudioFileTranscriber {
             progressHandler: progressHandler
         )
 
-        // Create a new note
+        // Create a new note with transcription-specific formatting
         progressHandler?("Saving to Notes...")
-        let fileName = fileURL.deletingPathExtension().lastPathComponent
-        let title = "Transcription - \(fileName)"
-        let noteId = try await notesService.createNewNote(title: title)
+        let fileName = fileURL.lastPathComponent
+        let title = "Transcription - \(fileURL.deletingPathExtension().lastPathComponent)"
+        let noteId = try await notesService.createTranscriptionNote(title: title, fileName: fileName)
 
-        // Append the transcription
-        try await notesService.appendToNote(noteId: noteId, text: text)
-        try await notesService.finalizeNote(noteId: noteId)
+        // Append the transcription (if transformed by LLM, treat as HTML)
+        let isHTML = mode?.hasTransformation ?? false
+        try await notesService.appendToNote(noteId: noteId, text: text, isHTML: isHTML)
+        try await notesService.finalizeTranscriptionNote(noteId: noteId)
 
         Logger.shared.log("AudioFileTranscriber: Saved transcription to Notes")
     }

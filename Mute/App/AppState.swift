@@ -970,23 +970,26 @@ class AppState: ObservableObject {
                 maxTokens: mode.maxTokens
             )
             Logger.shared.log("Transformation complete: \(transformedText.prefix(100))...")
-            completeTranscription(transformedText)
+            completeTranscription(transformedText, wasTransformed: true)
         } catch {
             Logger.shared.log("Transformation failed: \(error)", level: .error)
-            // Fall back to original text on error
+            // Fall back to original text on error (plain text, not transformed)
             completeTranscription(originalText)
         }
     }
 
     /// Completes the transcription process with the final text
-    private func completeTranscription(_ text: String) {
+    /// - Parameters:
+    ///   - text: The transcription text
+    ///   - wasTransformed: If true, text came from LLM and should be treated as HTML
+    private func completeTranscription(_ text: String, wasTransformed: Bool = false) {
         finalText = text
 
         // Handle capture mode differently - append to Notes instead of clipboard
         if isCaptureMode, let noteId = captureNoteId {
             Task {
                 do {
-                    try await notesIntegrationService.appendToNote(noteId: noteId, text: text)
+                    try await notesIntegrationService.appendToNote(noteId: noteId, text: text, isHTML: wasTransformed)
                     Logger.shared.log("Transcription appended to note")
                 } catch {
                     Logger.shared.log("Failed to append to note: \(error)", level: .error)
@@ -1002,7 +1005,13 @@ class AppState: ObservableObject {
         if let noteId = pendingCaptureNoteId {
             Task {
                 do {
-                    // Finalize the note (final text already handled by word timestamps)
+                    // Append final transcription text if not empty
+                    let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmedText.isEmpty {
+                        try await notesIntegrationService.appendToNote(noteId: noteId, text: trimmedText, isHTML: wasTransformed)
+                        Logger.shared.log("Final transcription appended to note")
+                    }
+                    // Then finalize the note
                     try await notesIntegrationService.finalizeNote(noteId: noteId)
                     Logger.shared.log("Capture mode ended, note finalized")
                 } catch {

@@ -25,8 +25,8 @@ final class GroqWhisperProvider: TranscriptionProvider {
     /// Delay between retries (seconds)
     private let retryDelay: TimeInterval = 1.0
 
-    /// Maximum file size (MB) - using developer tier limit
-    private let maxFileSizeMB: Double = 100.0
+    /// Maximum file size (MB) - Groq Developer tier limit
+    private let maxFileSizeMB: Double = 40.0
 
     // MARK: - TranscriptionProvider Protocol
 
@@ -140,6 +140,29 @@ final class GroqWhisperProvider: TranscriptionProvider {
 
     // MARK: - Request Building
 
+    /// Returns the MIME type for an audio file based on its extension
+    private func mimeType(for fileName: String) -> String {
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        switch ext {
+        case "wav":
+            return "audio/wav"
+        case "mp3":
+            return "audio/mpeg"
+        case "m4a", "mp4":
+            return "audio/mp4"
+        case "flac":
+            return "audio/flac"
+        case "ogg":
+            return "audio/ogg"
+        case "webm":
+            return "audio/webm"
+        case "mpeg", "mpga":
+            return "audio/mpeg"
+        default:
+            return "audio/wav"
+        }
+    }
+
     /// Builds a multipart/form-data request body
     func buildMultipartBody(
         audioData: Data,
@@ -158,7 +181,7 @@ final class GroqWhisperProvider: TranscriptionProvider {
         // File field
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n")
-        append("Content-Type: audio/wav\r\n\r\n")
+        append("Content-Type: \(mimeType(for: fileName))\r\n\r\n")
         body.append(audioData)
         append("\r\n")
 

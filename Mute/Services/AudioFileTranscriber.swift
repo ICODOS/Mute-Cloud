@@ -17,13 +17,19 @@ final class AudioFileTranscriber {
     /// Human-readable format string for UI
     static let supportedFormatsDescription = "WAV, MP3, M4A, AAC, FLAC, AIFF, OGG, WebM"
 
+    /// Formats that Groq Whisper API accepts directly (no conversion needed)
+    /// Source: https://console.groq.com/docs/speech-to-text
+    static let groqSupportedExtensions: Set<String> = [
+        "flac", "mp3", "mp4", "mpeg", "mpga", "m4a", "ogg", "wav", "webm"
+    ]
+
     // MARK: - Properties
 
     private let groqWhisperProvider = GroqWhisperProvider.shared
     private let groqChatProvider = GroqChatProvider.shared
 
-    /// Maximum file size in MB
-    private let maxFileSizeMB: Double = 100.0
+    /// Maximum file size in MB - Groq Developer tier limit
+    private let maxFileSizeMB: Double = 40.0
 
     // MARK: - Singleton
 
@@ -154,47 +160,21 @@ final class AudioFileTranscriber {
 
     // MARK: - Audio Preparation
 
-    /// Prepares an audio file for transcription, converting to WAV if necessary
+    /// Prepares an audio file for transcription, converting to WAV only if necessary
     /// - Parameter fileURL: The source audio file URL
-    /// - Returns: URL to a WAV file suitable for Groq Whisper
+    /// - Returns: URL to an audio file suitable for Groq Whisper
     private func prepareAudioFile(_ fileURL: URL) async throws -> URL {
         let ext = fileURL.pathExtension.lowercased()
 
-        // WAV files can be used directly (assuming 16kHz mono PCM)
-        // For production, we might want to verify the format
-        if ext == "wav" {
-            // Validate WAV format
-            if try await isValidWAVFormat(fileURL) {
-                return fileURL
-            }
+        // If format is directly supported by Groq, use as-is (no conversion)
+        if Self.groqSupportedExtensions.contains(ext) {
+            Logger.shared.log("AudioFileTranscriber: Using original \(ext.uppercased()) file (no conversion needed)")
+            return fileURL
         }
 
-        // Convert other formats to WAV
+        // Convert unsupported formats to WAV
+        Logger.shared.log("AudioFileTranscriber: Converting \(ext.uppercased()) to WAV")
         return try await convertToWAV(fileURL)
-    }
-
-    /// Checks if a WAV file is in a compatible format
-    private func isValidWAVFormat(_ fileURL: URL) async throws -> Bool {
-        let asset = AVAsset(url: fileURL)
-        guard let track = try await asset.loadTracks(withMediaType: .audio).first else {
-            return false
-        }
-
-        let descriptions = try await track.load(.formatDescriptions)
-        guard let formatDescription = descriptions.first else {
-            return false
-        }
-
-        let basicDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)
-        guard let description = basicDescription?.pointee else {
-            return false
-        }
-
-        // Check for PCM format
-        let isPCM = description.mFormatID == kAudioFormatLinearPCM
-
-        // We accept any sample rate as Groq can handle various rates
-        return isPCM
     }
 
     /// Converts an audio file to 16kHz mono WAV

@@ -1837,7 +1837,7 @@ struct AboutTab: View {
                     Text("Mute")
                         .font(.system(size: 24, weight: .bold))
 
-                    Text("Version 1.4.1")
+                    Text("Version 1.4.2")
                         .font(.system(size: 13))
                         .foregroundColor(.secondary)
 

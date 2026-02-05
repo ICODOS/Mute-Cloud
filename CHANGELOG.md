@@ -5,6 +5,14 @@ All notable changes to Mute will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.2] - 2026-02-05
+
+### Fixed
+- Large audio file transcription failing due to unnecessary WAV conversion (11MB M4A → 42MB WAV exceeded Groq's 40MB limit)
+- Groq-supported formats (M4A, MP3, FLAC, OGG, WebM) now uploaded directly without conversion
+- File size limit corrected from 100MB to 40MB (Groq Developer tier limit)
+- Dynamic MIME type detection for multipart uploads (was hardcoded to audio/wav)
+
 ## [1.4.1] - 2026-01-30
 
 ### Added

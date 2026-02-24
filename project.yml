@@ -4,7 +4,7 @@
 
 name: Mute
 options:
-  bundleIdPrefix: com.tinydictate
+  bundleIdPrefix: com.DS.mute
   deploymentTarget:
     macOS: "13.0"
   xcodeVersion: "15.0"
@@ -15,7 +15,7 @@ options:
 settings:
   base:
     PRODUCT_NAME: Mute
-    PRODUCT_BUNDLE_IDENTIFIER: com.tinydictate.app
+    PRODUCT_BUNDLE_IDENTIFIER: com.DS.mute.app
     MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.9"
@@ -63,7 +63,7 @@ targets:
     settings:
       base:
         PRODUCT_NAME: Mute
-        PRODUCT_BUNDLE_IDENTIFIER: com.tinydictate.app
+        PRODUCT_BUNDLE_IDENTIFIER: com.DS.mute.app
         INFOPLIST_FILE: Mute/Info.plist
         CODE_SIGN_ENTITLEMENTS: Mute/Mute.entitlements
         LD_RUNPATH_SEARCH_PATHS:

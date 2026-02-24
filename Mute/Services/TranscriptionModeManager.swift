@@ -50,17 +50,26 @@ final class TranscriptionModeManager: ObservableObject {
         fileTranscriptionMode
     }
 
+    // MARK: - Cycling Properties
+
+    /// Mode IDs included in the hotkey cycling rotation
+    @Published var cyclingModeIds: Set<UUID> = [] {
+        didSet { saveCyclingModeIds() }
+    }
+
     // MARK: - Private Properties
 
     private let userDefaultsKey = "transcriptionModes"
     private let dictationModeIdKey = "dictationModeId"
     private let fileTranscriptionModeIdKey = "fileTranscriptionModeId"
+    private let cyclingModeIdsKey = "cyclingModeIds"
 
     // MARK: - Initialization
 
     private init() {
         loadModes()
         loadModeIds()
+        loadCyclingState()
     }
 
     // MARK: - CRUD Operations
@@ -235,6 +244,49 @@ final class TranscriptionModeManager: ObservableObject {
         setFileTranscriptionMode(id)
     }
 
+    // MARK: - Cycling Operations
+
+    func toggleCycling(for modeId: UUID) {
+        if cyclingModeIds.contains(modeId) {
+            cyclingModeIds.remove(modeId)
+        } else {
+            cyclingModeIds.insert(modeId)
+        }
+    }
+
+    func isCyclingEnabled(for modeId: UUID) -> Bool {
+        cyclingModeIds.contains(modeId)
+    }
+
+    /// Cycles to the next dictation mode in the rotation and returns its display name
+    @discardableResult
+    func cycleToNextDictationMode() -> String {
+        // Build ordered list of mode IDs in the cycle (nil = None, always included)
+        var cycleList: [UUID?] = [nil]
+        // Append user modes that are in the cycling set, preserving drag-reorder
+        let userModes = modes.filter { !$0.isBuiltIn }
+        for mode in userModes where cyclingModeIds.contains(mode.id) {
+            cycleList.append(mode.id)
+        }
+
+        // If nothing to cycle through, stay on current
+        guard !cycleList.isEmpty else {
+            return dictationMode?.name ?? "None"
+        }
+
+        // Find current position
+        let currentIndex = cycleList.firstIndex(where: { $0 == dictationModeId }) ?? -1
+        let nextIndex = (currentIndex + 1) % cycleList.count
+        let nextId = cycleList[nextIndex]
+
+        setDictationMode(nextId)
+
+        if let nextId = nextId, let mode = modes.first(where: { $0.id == nextId }) {
+            return mode.name
+        }
+        return "None"
+    }
+
     // MARK: - Persistence
 
     private func loadModes() {
@@ -295,5 +347,17 @@ final class TranscriptionModeManager: ObservableObject {
         } else {
             UserDefaults.standard.removeObject(forKey: key)
         }
+    }
+
+    private func loadCyclingState() {
+        // Load cycling mode IDs
+        if let strings = UserDefaults.standard.stringArray(forKey: cyclingModeIdsKey) {
+            cyclingModeIds = Set(strings.compactMap { UUID(uuidString: $0) })
+        }
+    }
+
+    private func saveCyclingModeIds() {
+        let strings = cyclingModeIds.map { $0.uuidString }
+        UserDefaults.standard.set(strings, forKey: cyclingModeIdsKey)
     }
 }

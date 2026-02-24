@@ -11,6 +11,7 @@ enum OverlayState {
     case processing
     case done
     case error
+    case modeChanged
 }
 
 // MARK: - Overlay Panel
@@ -50,16 +51,17 @@ class OverlayPanel: NSPanel {
         positionPanel()
     }
 
-    private func positionPanel() {
+    private func positionPanel(wide: Bool = false) {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
 
         let margin: CGFloat = 14
-        let panelSize: CGFloat = 64
+        let panelHeight: CGFloat = 64
+        let panelWidth: CGFloat = wide ? 200 : 64
 
         let x = screen.visibleFrame.origin.x + margin
-        let y = screen.visibleFrame.origin.y + screen.visibleFrame.height - panelSize - margin
+        let y = screen.visibleFrame.origin.y + screen.visibleFrame.height - panelHeight - margin
 
-        self.setFrame(NSRect(x: x, y: y, width: panelSize, height: panelSize), display: false)
+        self.setFrame(NSRect(x: x, y: y, width: panelWidth, height: panelHeight), display: false)
     }
 
     // MARK: - Public API
@@ -73,7 +75,7 @@ class OverlayPanel: NSPanel {
             if state == .hidden {
                 self.orderOut(nil)
             } else {
-                self.positionPanel()
+                self.positionPanel(wide: state == .modeChanged)
                 self.orderFront(nil)
             }
         }
@@ -117,9 +119,14 @@ struct OverlayContentView: View {
                 DoneIndicator()
             case .error:
                 ErrorIndicator()
+            case .modeChanged:
+                ModeChangedIndicator(modeName: viewModel.text ?? "None")
             }
         }
-        .frame(width: 64, height: 64)
+        .frame(
+            maxWidth: viewModel.state == .modeChanged ? 200 : 64,
+            maxHeight: 64
+        )
     }
 }
 
@@ -371,6 +378,45 @@ struct ErrorIndicator: View {
                         shakeOffset = 0
                     }
                 }
+            }
+        }
+    }
+}
+
+// MARK: - Mode Changed Indicator
+struct ModeChangedIndicator: View {
+    let modeName: String
+    @State private var appeared = false
+
+    private let modeColor = Color(red: 0.6, green: 0.4, blue: 0.95)
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "wand.and.stars")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(modeColor)
+
+            Text(modeName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            Capsule()
+                .fill(Color(white: 0.12))
+                .overlay(
+                    Capsule()
+                        .stroke(modeColor.opacity(0.4), lineWidth: 0.75)
+                )
+                .shadow(color: modeColor.opacity(0.3), radius: 8, x: 0, y: 0)
+        )
+        .opacity(appeared ? 1 : 0)
+        .scaleEffect(appeared ? 1 : 0.7)
+        .onAppear {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                appeared = true
             }
         }
     }

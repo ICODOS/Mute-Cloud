@@ -551,18 +551,72 @@ struct StopHotkeyButton: View {
 
 // MARK: - Modes Hotkey Row
 struct ModesHotkeyRow: View {
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Open Modes Settings")
-                    .font(.system(size: 13, weight: .medium))
-                Text("Quick access to transcription modes")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-            }
-            Spacer()
+    @State private var hasAccessibility = AXIsProcessTrusted()
+    @State private var hotkeyConfig = ModesHotkeyConfig.load()
+    @State private var accessibilityPollTimer: Timer?
 
-            ModesHotkeyButton()
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Cycle Dictation Mode")
+                        .font(.system(size: 13, weight: .medium))
+                    Text("Cycle through enabled modes")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+
+                ModesHotkeyButton()
+            }
+
+            if hotkeyConfig.isEnabled && !hasAccessibility {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                        .font(.system(size: 12))
+                    Text("Accessibility permission required for global shortcut")
+                        .font(.system(size: 11))
+                        .foregroundColor(.orange)
+                    Spacer()
+                    Button("Grant Access") {
+                        requestAccessibilityAndPoll()
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.orange.opacity(0.1))
+                )
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .modesHotkeyDidChange)) { _ in
+            hotkeyConfig = ModesHotkeyConfig.load()
+            hasAccessibility = AXIsProcessTrusted()
+        }
+        .onDisappear {
+            accessibilityPollTimer?.invalidate()
+            accessibilityPollTimer = nil
+        }
+    }
+
+    private func requestAccessibilityAndPoll() {
+        // Prompt the system accessibility dialog
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        AXIsProcessTrustedWithOptions(options)
+
+        // Poll for the permission change
+        accessibilityPollTimer?.invalidate()
+        accessibilityPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
+            if AXIsProcessTrusted() {
+                timer.invalidate()
+                accessibilityPollTimer = nil
+                hasAccessibility = true
+                NotificationCenter.default.post(name: .modesHotkeyDidChange, object: nil)
+            }
         }
     }
 }
@@ -1358,11 +1412,6 @@ struct ModesSettingsTab: View {
                     HStack {
                         SettingsSectionHeader(title: "Your Modes", icon: "list.bullet.rectangle", iconColor: .purple)
                         Spacer()
-                        if !modeManager.modes.filter({ !$0.isBuiltIn }).isEmpty {
-                            Text("Drag to reorder")
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                        }
                     }
 
                     SettingsCard {
@@ -1380,10 +1429,28 @@ struct ModesSettingsTab: View {
                                 }
                                 .padding(.vertical, 8)
                             } else {
+                                // Column headers
+                                HStack(spacing: 8) {
+                                    Text("Order")
+                                        .fixedSize()
+                                        .frame(width: 34)
+                                    Text("Cycle")
+                                        .fixedSize()
+                                        .frame(width: 34)
+                                    Text("Mode")
+                                        .fixedSize()
+                                    Spacer()
+                                }
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundColor(.secondary)
+                                .padding(.top, 4)
+                                .padding(.bottom, 2)
+
                                 ReorderableModeList(
                                     modes: userModes,
                                     dictationModeId: modeManager.dictationModeId,
                                     fileTranscriptionModeId: modeManager.fileTranscriptionModeId,
+                                    cyclingModeIds: modeManager.cyclingModeIds,
                                     onEdit: { mode in
                                         editingMode = mode
                                         showingModeEditor = true
@@ -1393,6 +1460,9 @@ struct ModesSettingsTab: View {
                                     },
                                     onMove: { source, destination in
                                         modeManager.moveModes(from: source, to: destination)
+                                    },
+                                    onToggleCycling: { mode in
+                                        modeManager.toggleCycling(for: mode.id)
                                     }
                                 )
                             }
@@ -1503,9 +1573,11 @@ struct ReorderableModeList: View {
     let modes: [TranscriptionMode]
     let dictationModeId: UUID?
     let fileTranscriptionModeId: UUID?
+    let cyclingModeIds: Set<UUID>
     let onEdit: (TranscriptionMode) -> Void
     let onDelete: (TranscriptionMode) -> Void
     let onMove: (IndexSet, Int) -> Void
+    let onToggleCycling: (TranscriptionMode) -> Void
 
     var body: some View {
         ForEach(Array(modes.enumerated()), id: \.element.id) { index, mode in
@@ -1515,7 +1587,17 @@ struct ReorderableModeList: View {
                     Image(systemName: "line.3.horizontal")
                         .font(.system(size: 12))
                         .foregroundColor(.secondary.opacity(0.5))
-                        .frame(width: 20)
+                        .frame(width: 34)
+
+                    // Cycling toggle
+                    Button(action: { onToggleCycling(mode) }) {
+                        Image(systemName: cyclingModeIds.contains(mode.id) ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 14))
+                            .foregroundColor(cyclingModeIds.contains(mode.id) ? .purple : .secondary.opacity(0.4))
+                    }
+                    .buttonStyle(.plain)
+                    .frame(width: 34)
+                    .help("Include in hotkey cycling")
 
                     // Mode content
                     VStack(alignment: .leading, spacing: 2) {

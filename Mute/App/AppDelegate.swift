@@ -23,7 +23,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // For two-key combo detection
     private var modesFirstKeyDown: Bool = false
     private var modesSecondKeyDown: Bool = false
-    
+    private var modesOverlayHideWorkItem: DispatchWorkItem?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Show app in Dock (regular app, not menu-bar-only)
         NSApp.setActivationPolicy(.regular)
@@ -128,7 +129,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Clean up overlay
+        // Clean up overlay timer and panel
+        modesOverlayHideWorkItem?.cancel()
+        modesOverlayHideWorkItem = nil
         overlayPanel?.close()
 
         // Remove event monitors
@@ -149,6 +152,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Also handle when app is activated (clicked in Dock)
     func applicationDidBecomeActive(_ notification: Notification) {
+        // Re-setup modes hotkey global monitor if accessibility was granted after initial setup
+        if AXIsProcessTrusted() && modesHotkeyGlobalMonitor == nil {
+            let config = ModesHotkeyConfig.load()
+            if config.isEnabled {
+                removeModesHotkeyMonitors()
+                setupModesHotkey()
+            }
+        }
+
         let visibleWindows = NSApp.windows.filter {
             $0.isVisible && $0.level == .normal && !$0.className.contains("MenuBarExtra")
         }
@@ -280,10 +292,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let hasAccessibility = AXIsProcessTrusted()
+        if !hasAccessibility {
+            Logger.shared.log("Modes hotkey: Accessibility not granted, global monitor skipped", level: .warning)
+        }
+
         if config.isTwoKeyCombo || config.isModifierOnly {
             // For two-key combos and modifier-only hotkeys, monitor flagsChanged events
-            modesHotkeyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-                self?.checkModesTwoKeyOrModifierHotkey(event: event, config: config)
+            if hasAccessibility {
+                modesHotkeyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                    self?.checkModesTwoKeyOrModifierHotkey(event: event, config: config)
+                }
             }
             modesHotkeyLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
                 if self?.checkModesTwoKeyOrModifierHotkey(event: event, config: config) == true {
@@ -293,8 +312,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } else {
             // For regular keys, monitor keyDown events
-            modesHotkeyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                self?.checkModesHotkey(event: event, config: config)
+            if hasAccessibility {
+                modesHotkeyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                    self?.checkModesHotkey(event: event, config: config)
+                }
             }
             modesHotkeyLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 if self?.checkModesHotkey(event: event, config: config) == true {
@@ -304,7 +325,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        Logger.shared.log("Modes hotkey configured: \(config.displayString)")
+        Logger.shared.log("Modes hotkey configured: \(config.displayString) (global: \(hasAccessibility))")
     }
 
     private func removeModesHotkeyMonitors() {
@@ -434,8 +455,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleModesHotkeyPressed(config: ModesHotkeyConfig) {
         Task { @MainActor in
-            Logger.shared.log("Modes hotkey pressed (\(config.displayString)) - opening Settings to Modes tab")
-            SettingsCoordinator.shared.requestOpenSettings(tab: .modes)
+            let modeName = TranscriptionModeManager.shared.cycleToNextDictationMode()
+            Logger.shared.log("Modes hotkey pressed (\(config.displayString)) - cycled to mode: \(modeName)")
+            AppState.shared.overlayPanel?.show(state: .modeChanged, text: modeName)
+
+            // Cancel any pending hide from a previous press
+            modesOverlayHideWorkItem?.cancel()
+
+            let workItem = DispatchWorkItem { [weak self] in
+                guard self != nil else { return }
+                AppState.shared.overlayPanel?.hide()
+            }
+            modesOverlayHideWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: workItem)
         }
     }
 

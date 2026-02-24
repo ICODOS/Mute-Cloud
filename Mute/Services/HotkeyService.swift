@@ -32,6 +32,8 @@ final class HotkeyService {
 
     private var stopGlobalEventMonitor: Any?
     private var stopLocalEventMonitor: Any?
+    private var stopKeyDownGlobalMonitor: Any?
+    private var stopKeyDownLocalMonitor: Any?
 
     private var modesGlobalMonitor: Any?
     private var modesLocalMonitor: Any?
@@ -148,16 +150,53 @@ final class HotkeyService {
     private func setupStopHotkey() {
         let config = StopHotkeyConfig.load()
 
-        // Stop hotkey is always a standard key combo (never modifier-only)
-        stopHotkeyUsesNSEvent = false
-        syncStopHotkeyConfigToKeyboardShortcuts(config)
-        KeyboardShortcuts.onKeyDown(for: .cancelRecording) {
-            Task { @MainActor in
-                AppDelegate.handleStopHotkeyAction()
+        let isBareEscape = config.keyCode == UInt16(kVK_Escape)
+            && !config.command && !config.option && !config.control && !config.shift
+
+        if isBareEscape {
+            // Bare Escape can't be registered via Carbon/KeyboardShortcuts — use NSEvent monitors
+            stopHotkeyUsesNSEvent = true
+            setupStopNSEventMonitors(config: config)
+        } else {
+            // Standard combo: use Carbon via KeyboardShortcuts
+            stopHotkeyUsesNSEvent = false
+            syncStopHotkeyConfigToKeyboardShortcuts(config)
+            KeyboardShortcuts.onKeyDown(for: .cancelRecording) {
+                Task { @MainActor in
+                    AppDelegate.handleStopHotkeyAction()
+                }
             }
         }
 
-        Logger.shared.log("Stop hotkey configured: \(config.displayString) (Carbon)")
+        Logger.shared.log("Stop hotkey configured: \(config.displayString) (Carbon: \(!stopHotkeyUsesNSEvent))")
+    }
+
+    private func setupStopNSEventMonitors(config: StopHotkeyConfig) {
+        stopKeyDownGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.checkStopKeyDown(event: event, config: config)
+        }
+        stopKeyDownLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if self?.checkStopKeyDown(event: event, config: config) == true {
+                return nil
+            }
+            return event
+        }
+    }
+
+    @discardableResult
+    private func checkStopKeyDown(event: NSEvent, config: StopHotkeyConfig) -> Bool {
+        guard event.keyCode == config.keyCode else { return false }
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let wantCommand = config.command, wantOption = config.option
+        let wantControl = config.control, wantShift = config.shift
+        let hasCommand = mods.contains(.command), hasOption = mods.contains(.option)
+        let hasControl = mods.contains(.control), hasShift = mods.contains(.shift)
+        if wantCommand == hasCommand && wantOption == hasOption
+            && wantControl == hasControl && wantShift == hasShift {
+            AppDelegate.handleStopHotkeyAction()
+            return true
+        }
+        return false
     }
 
     private func removeStopMonitors() {
@@ -168,6 +207,14 @@ final class HotkeyService {
         if let monitor = stopLocalEventMonitor {
             NSEvent.removeMonitor(monitor)
             stopLocalEventMonitor = nil
+        }
+        if let monitor = stopKeyDownGlobalMonitor {
+            NSEvent.removeMonitor(monitor)
+            stopKeyDownGlobalMonitor = nil
+        }
+        if let monitor = stopKeyDownLocalMonitor {
+            NSEvent.removeMonitor(monitor)
+            stopKeyDownLocalMonitor = nil
         }
     }
 

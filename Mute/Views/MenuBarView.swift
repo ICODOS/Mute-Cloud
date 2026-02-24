@@ -2,13 +2,21 @@
 // Mute
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject private var modeManager = TranscriptionModeManager.shared
     @State private var hotkeyDisplay = HotkeyConfig.load().displayString
     @State private var isHoveringRecord = false
     @State private var isHoveringSettings = false
     @State private var isHoveringQuit = false
+    @State private var isHoveringImport = false
+    @State private var showingFilePicker = false
+
+    private var isCloudMode: Bool {
+        TranscriptionBackend(rawValue: appState.transcriptionBackendRaw) == .groqWhisper
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,6 +45,11 @@ struct MenuBarView: View {
 
                 // Stats section
                 statsSection
+
+                // Audio file import (cloud mode only)
+                if isCloudMode {
+                    audioImportSection
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -51,6 +64,13 @@ struct MenuBarView: View {
         .background(Color(NSColor.windowBackgroundColor))
         .onReceive(NotificationCenter.default.publisher(for: .hotkeyDidChange)) { _ in
             hotkeyDisplay = HotkeyConfig.load().displayString
+        }
+        .fileImporter(
+            isPresented: $showingFilePicker,
+            allowedContentTypes: [.audio],
+            allowsMultipleSelection: false
+        ) { result in
+            handleFileSelection(result)
         }
     }
 
@@ -80,6 +100,11 @@ struct MenuBarView: View {
 
             Spacer()
 
+            // Mode picker (cloud mode only)
+            if isCloudMode {
+                modePicker
+            }
+
             // Hotkey badge
             Text(hotkeyDisplay)
                 .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -92,6 +117,63 @@ struct MenuBarView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+    }
+
+    // MARK: - Mode Picker
+    private var modePicker: some View {
+        Menu {
+            Button(action: { modeManager.setActiveMode(nil) }) {
+                HStack {
+                    Text("None")
+                    if modeManager.activeModeId == nil {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+
+            if !modeManager.modes.filter({ !$0.isBuiltIn }).isEmpty {
+                Divider()
+
+                ForEach(modeManager.modes.filter { !$0.isBuiltIn }) { mode in
+                    Button(action: { modeManager.setActiveMode(mode.id) }) {
+                        HStack {
+                            Text(mode.name)
+                            if modeManager.activeModeId == mode.id {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            Button(action: openModesSettings) {
+                HStack {
+                    Image(systemName: "gear")
+                    Text("Manage Modes...")
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 9))
+                Text(modeManager.activeMode?.name ?? "None")
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundColor(.purple)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.purple.opacity(0.15))
+            .cornerRadius(6)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private func openModesSettings() {
+        // Open settings window directly to the Modes tab
+        SettingsCoordinator.shared.requestOpenSettings(tab: .modes)
     }
 
     // MARK: - Recording Button
@@ -271,6 +353,188 @@ struct MenuBarView: View {
         )
     }
 
+    // MARK: - Audio Import Section
+    private var audioImportSection: some View {
+        Button(action: {
+            if appState.isTranscribingFile {
+                appState.cancelFileTranscription()
+            } else {
+                showingFilePicker = true
+            }
+        }) {
+            HStack(spacing: 12) {
+                // Icon
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(appState.isTranscribingFile ? Color.red.opacity(0.15) : Color.green.opacity(0.15))
+                        .frame(width: 36, height: 36)
+
+                    if appState.isTranscribingFile {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.red)
+                    } else {
+                        Image(systemName: "doc.badge.plus")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.green)
+                    }
+                }
+
+                // Text
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(appState.isTranscribingFile ? "Cancel Transcription" : "Import Audio File")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.primary)
+
+                    if appState.isTranscribingFile && !appState.fileTranscriptionProgress.isEmpty {
+                        Text(appState.fileTranscriptionProgress)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("Transcribe to Notes")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                // Arrow or cancel icon
+                if appState.isTranscribingFile {
+                    ProgressView()
+                        .scaleEffect(0.6)
+                        .frame(width: 16, height: 16)
+                } else {
+                    Image(systemName: "arrow.right.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(.green.opacity(0.6))
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(isHoveringImport
+                        ? (appState.isTranscribingFile ? Color.red.opacity(0.12) : Color.green.opacity(0.12))
+                        : (appState.isTranscribingFile ? Color.red.opacity(0.06) : Color.green.opacity(0.06)))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(appState.isTranscribingFile ? Color.red.opacity(0.2) : Color.green.opacity(0.2), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHoveringImport = hovering
+        }
+    }
+
+    private func handleFileSelection(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let fileURL = urls.first else { return }
+
+            appState.isTranscribingFile = true
+            appState.fileTranscriptionProgress = "Starting..."
+
+            let task = Task {
+                defer {
+                    Task { @MainActor in
+                        appState.setFileTranscriptionTask(nil)
+                    }
+                }
+
+                do {
+                    guard fileURL.startAccessingSecurityScopedResource() else {
+                        throw AudioFileTranscriberError.fileNotFound
+                    }
+                    defer { fileURL.stopAccessingSecurityScopedResource() }
+
+                    // Check for cancellation before starting
+                    try Task.checkCancellation()
+
+                    try await AudioFileTranscriber.shared.transcribeToNotes(
+                        fileURL: fileURL,
+                        mode: modeManager.activeMode,
+                        language: appState.cloudTranscriptionLanguage.isEmpty ? nil : appState.cloudTranscriptionLanguage,
+                        prompt: appState.cloudTranscriptionPrompt.isEmpty ? nil : appState.cloudTranscriptionPrompt,
+                        progressHandler: { progress in
+                            Task { @MainActor in
+                                appState.fileTranscriptionProgress = progress
+                            }
+                        }
+                    )
+
+                    await MainActor.run {
+                        appState.isTranscribingFile = false
+                        appState.fileTranscriptionProgress = ""
+                    }
+                } catch is CancellationError {
+                    // User cancelled - show cancelled state
+                    Logger.shared.log("File transcription cancelled by user", level: .info)
+
+                    await MainActor.run {
+                        appState.fileTranscriptionError = true
+                        appState.fileTranscriptionProgress = "Cancelled"
+                        appState.fileTranscriptionProgressValue = 0.0
+                    }
+
+                    // Keep cancelled state visible briefly
+                    await withCheckedContinuation { continuation in
+                        Task.detached {
+                            try? await Task.sleep(nanoseconds: 2_500_000_000)
+                            continuation.resume()
+                        }
+                    }
+
+                    await MainActor.run {
+                        appState.fileTranscriptionError = false
+                        appState.isTranscribingFile = false
+                        appState.fileTranscriptionProgress = ""
+                    }
+                } catch {
+                    Logger.shared.log("File transcription failed: \(error)", level: .error)
+
+                    // Provide user-friendly error message
+                    let userMessage: String
+                    if error.localizedDescription.contains("timeout") || error.localizedDescription.contains("timed out") {
+                        userMessage = "Transcription timed out"
+                    } else if error.localizedDescription.contains("API") || error.localizedDescription.contains("key") {
+                        userMessage = "API error - check settings"
+                    } else if error.localizedDescription.contains("network") || error.localizedDescription.contains("connection") {
+                        userMessage = "Network error"
+                    } else {
+                        userMessage = "Transcription failed"
+                    }
+
+                    await MainActor.run {
+                        appState.fileTranscriptionError = true
+                        appState.fileTranscriptionProgress = userMessage
+                        appState.fileTranscriptionProgressValue = 0.0
+                    }
+
+                    // Keep error visible - use detached task to avoid inheriting cancellation
+                    await withCheckedContinuation { continuation in
+                        Task.detached {
+                            try? await Task.sleep(nanoseconds: 2_500_000_000)
+                            continuation.resume()
+                        }
+                    }
+
+                    await MainActor.run {
+                        appState.fileTranscriptionError = false
+                        appState.isTranscribingFile = false
+                        appState.fileTranscriptionProgress = ""
+                    }
+                }
+            }
+            appState.setFileTranscriptionTask(task)
+
+        case .failure(let error):
+            Logger.shared.log("File picker error: \(error)", level: .error)
+        }
+    }
+
     // MARK: - Error Section
     private func errorSection(message: String) -> some View {
         HStack(spacing: 8) {
@@ -296,8 +560,7 @@ struct MenuBarView: View {
         HStack(spacing: 8) {
             // Settings button
             Button(action: {
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                NSApp.activate(ignoringOtherApps: true)
+                SettingsCoordinator.shared.requestOpenSettings()
             }) {
                 HStack(spacing: 6) {
                     Image(systemName: "gear")
@@ -308,10 +571,12 @@ struct MenuBarView: View {
                 .foregroundColor(.primary)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
+                .frame(minWidth: 80, minHeight: 32)
                 .background(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(isHoveringSettings ? Color(NSColor.controlBackgroundColor) : Color.clear)
                 )
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .onHover { hovering in

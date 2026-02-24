@@ -168,6 +168,7 @@ class AppState: ObservableObject {
     let groqChatProvider = GroqChatProvider.shared
     private var cloudAudioFileManager: AudioFileManager?
     private var cloudTranscriptionTask: Task<Void, Never>?
+    private var fileTranscriptionTask: Task<Void, Never>?
 
     // MARK: - Transcription Modes
     let modeManager = TranscriptionModeManager.shared
@@ -177,6 +178,7 @@ class AppState: ObservableObject {
     @Published var fileTranscriptionProgress: String = ""
     @Published var fileTranscriptionProgressValue: Double = 0.0
     @Published var fileTranscriptionCompleted: Bool = false
+    @Published var fileTranscriptionError: Bool = false
     
     // MARK: - Overlay
     weak var overlayPanel: OverlayPanel?
@@ -784,6 +786,22 @@ class AppState: ObservableObject {
         overlayPanel?.hide()
 
         Logger.shared.log("Recording cancelled")
+    }
+
+    // MARK: - File Transcription Control
+
+    /// Store a file transcription task for cancellation support
+    func setFileTranscriptionTask(_ task: Task<Void, Never>?) {
+        fileTranscriptionTask = task
+    }
+
+    /// Cancel an ongoing file transcription
+    func cancelFileTranscription() {
+        fileTranscriptionTask?.cancel()
+        fileTranscriptionTask = nil
+
+        Logger.shared.log("File transcription cancelled")
+        // State cleanup is handled by the error handling in the task itself
     }
 
     // MARK: - Capture Mode Control

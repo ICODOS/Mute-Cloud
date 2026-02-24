@@ -51,6 +51,7 @@ enum TranscriptionError: Error, LocalizedError {
     case timeout
     case cancelled
     case unknown(message: String)
+    case transformationFailed(message: String)
 
     var errorDescription: String? {
         switch self {
@@ -74,6 +75,8 @@ enum TranscriptionError: Error, LocalizedError {
             return "Transcription was cancelled"
         case .unknown(let message):
             return message
+        case .transformationFailed(let message):
+            return "Text transformation failed: \(message)"
         }
     }
 }

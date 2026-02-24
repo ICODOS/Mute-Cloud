@@ -1,5 +1,5 @@
 // MuteApp.swift
-// Mute - A local dictation app using NVIDIA Parakeet TDT v3
+// Mute - A cloud-powered dictation app using Groq Whisper
 // Copyright 2024 - MIT License
 
 import SwiftUI
@@ -89,16 +89,10 @@ struct MainAppView: View {
     @State private var isHoveringDictation = false
     @State private var captureAnimating = false
     @State private var showingInsights = false
-    @State private var isStartupChecking = true
-    @State private var startupTimer: Timer?
     @State private var showingFilePicker = false
     @State private var isHoveringAudioImport = false
     @State private var showingModePicker = false
     @State private var showingFileModeicker = false
-
-    private var isCloudMode: Bool {
-        appState.transcriptionBackend == .groqWhisper
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -149,9 +143,8 @@ struct MainAppView: View {
                         captureToNotesCard
                     }
 
-                    // MARK: - Audio File Import Section (Cloud Mode Only)
-                    if appState.transcriptionBackend == .groqWhisper {
-                        Button {
+                    // MARK: - Audio File Import Section
+                    Button {
                             if appState.isTranscribingFile {
                                 appState.cancelFileTranscription()
                             } else {
@@ -374,97 +367,8 @@ struct MainAppView: View {
                         }
                         .buttonStyle(.borderless)
                         .contentShape(Rectangle())
-                        .onHover { hovering in
-                            isHoveringAudioImport = hovering
-                        }
-                    }
-
-                    // MARK: - Status Banner (Connecting, Loading, or Error)
-                    if isStartupChecking {
-                        // During startup period - show appropriate loading state
-                        HStack(spacing: 12) {
-                            ProgressView()
-                                .scaleEffect(0.8)
-                                .frame(width: 20, height: 20)
-
-                            Text(startupStatusText)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(.secondary)
-
-                            Spacer()
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(Color(NSColor.controlBackgroundColor))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-                        )
-                    } else if !isCloudMode && !appState.backendManager.availableModels.isEmpty && appState.modelStatus != .ready {
-                        // Model not ready error (only in local mode, after startup grace period and models list loaded)
-                        HStack(spacing: 12) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.orange.opacity(0.15))
-                                    .frame(width: 36, height: 36)
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .font(.system(size: 16))
-                                    .foregroundColor(.orange)
-                            }
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Model Required")
-                                    .font(.system(size: 13, weight: .semibold))
-                                Text("Download a model in Settings → Model tab")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.secondary)
-                            }
-
-                            Spacer()
-
-                            Group {
-                                if #available(macOS 14.0, *) {
-                                    SettingsLink {
-                                        Text("Open Settings")
-                                            .font(.system(size: 12, weight: .medium))
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 6)
-                                            .background(
-                                                RoundedRectangle(cornerRadius: 8)
-                                                    .fill(Color.orange)
-                                            )
-                                    }
-                                    .buttonStyle(.borderless)
-                                } else {
-                                    Button(action: openSettings) {
-                                        Text("Open Settings")
-                                            .font(.system(size: 12, weight: .medium))
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 6)
-                                            .background(
-                                                RoundedRectangle(cornerRadius: 8)
-                                                    .fill(Color.orange)
-                                            )
-                                    }
-                                    .buttonStyle(.borderless)
-                                }
-                            }
-                        }
-                        .padding(18)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(Color.orange.opacity(0.08))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16)
-                                .stroke(Color.orange.opacity(0.25), lineWidth: 1)
-                        )
-                        .shadow(color: Color.black.opacity(0.04), radius: 6, y: 3)
+                    .onHover { hovering in
+                        isHoveringAudioImport = hovering
                     }
 
                     // MARK: - Usage Stats
@@ -607,12 +511,16 @@ struct MainAppView: View {
             // Status Footer
             HStack(spacing: 8) {
                 Circle()
-                    .fill(footerStatusColor)
+                    .fill(Color.green)
                     .frame(width: 8, height: 8)
 
-                Text(footerStatusText)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                HStack(spacing: 4) {
+                    Image(systemName: "cloud.fill")
+                        .font(.system(size: 9))
+                    Text("Cloud: Groq Whisper")
+                }
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
 
                 Spacer()
             }
@@ -621,26 +529,6 @@ struct MainAppView: View {
         }
         .frame(width: 520, height: 760)
         .background(Color(NSColor.windowBackgroundColor))
-        .onAppear {
-            startStartupTimer()
-        }
-        .onDisappear {
-            startupTimer?.invalidate()
-        }
-        .onChange(of: appState.backendStatus) { newStatus in
-            // If connected, end startup checking early
-            if newStatus == .connected && appState.modelStatus == .ready {
-                isStartupChecking = false
-                startupTimer?.invalidate()
-            }
-        }
-        .onChange(of: appState.modelStatus) { newStatus in
-            // If model ready and connected, end startup checking early
-            if newStatus == .ready && appState.backendStatus == .connected {
-                isStartupChecking = false
-                startupTimer?.invalidate()
-            }
-        }
         .onReceive(NotificationCenter.default.publisher(for: .hotkeyDidChange)) { _ in
             hotkeyDisplay = HotkeyConfig.load().displayString
         }
@@ -656,70 +544,6 @@ struct MainAppView: View {
             allowsMultipleSelection: false
         ) { result in
             handleFileSelection(result)
-        }
-    }
-
-    private func startStartupTimer() {
-        // Reset state on appear
-        isStartupChecking = true
-        startupTimer?.invalidate()
-
-        // After 15 seconds, show actual errors if still not ready
-        startupTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: false) { _ in
-            DispatchQueue.main.async {
-                isStartupChecking = false
-            }
-        }
-    }
-
-    private var startupStatusText: String {
-        switch appState.backendStatus {
-        case .disconnected:
-            return "Starting backend..."
-        case .connecting:
-            return "Connecting..."
-        case .connected:
-            if appState.backendManager.availableModels.isEmpty {
-                return "Loading models..."
-            } else if appState.modelStatus != .ready {
-                return "Loading model..."
-            } else {
-                return "Preparing..."
-            }
-        case .error:
-            return "Connection error..."
-        }
-    }
-
-    private var footerStatusColor: Color {
-        if isStartupChecking {
-            return .orange // Startup state
-        }
-        return backendStatusColor
-    }
-
-    private var footerStatusText: String {
-        if isStartupChecking {
-            return startupStatusText
-        }
-        return backendStatusText
-    }
-
-    private var backendStatusColor: Color {
-        switch appState.backendStatus {
-        case .connected: return .green
-        case .connecting: return .orange
-        case .disconnected: return .gray
-        case .error: return .red
-        }
-    }
-
-    private var backendStatusText: String {
-        switch appState.backendStatus {
-        case .connected: return "Backend Connected"
-        case .connecting: return "Connecting..."
-        case .disconnected: return "Disconnected"
-        case .error: return "Connection Error"
         }
     }
 
@@ -740,11 +564,6 @@ struct MainAppView: View {
 
     private func openSettings() {
         SettingsCoordinator.shared.requestOpenSettings()
-    }
-
-    private var isCaptureModelDownloaded: Bool {
-        let modelInfo = appState.backendManager.availableModels.first { $0.id == appState.captureNotesModel }
-        return modelInfo?.downloaded ?? false
     }
 
     private var isDictating: Bool {
@@ -768,22 +587,7 @@ struct MainAppView: View {
     }
 
     private var dictationEngineDisplayName: String {
-        if appState.transcriptionBackend == .groqWhisper {
-            return "Groq Whisper"
-        } else {
-            return modelDisplayName(appState.dictationModel)
-        }
-    }
-
-    private func modelDisplayName(_ modelId: String) -> String {
-        switch modelId {
-        case "parakeet": return "Parakeet"
-        case "base": return "Whisper Base"
-        case "small": return "Whisper Small"
-        case "medium": return "Whisper Medium"
-        case "large-v3-turbo": return "Whisper Turbo"
-        default: return modelId
-        }
+        return "Groq Whisper"
     }
 
     // MARK: - Quick Dictation Card
@@ -887,12 +691,12 @@ struct MainAppView: View {
                         .stroke(Color(NSColor.separatorColor).opacity(0.3), lineWidth: 1)
                 )
 
-                // Mode selector (cloud mode only)
-                if isCloudMode && !isDictating {
+                // Mode selector
+                if !isDictating {
                     dictationModeSelector
                 }
             }
-            .frame(maxWidth: isCloudMode && !isDictating ? 220 : nil)
+            .frame(maxWidth: !isDictating ? 220 : nil)
             .padding(.bottom, 6)
 
             Spacer()
@@ -989,10 +793,10 @@ struct MainAppView: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.red)
             } else {
-                Image(systemName: appState.transcriptionBackend == .groqWhisper ? "cloud.fill" : "cpu")
+                Image(systemName: "cloud.fill")
                     .font(.system(size: 9))
                     .foregroundColor(.secondary.opacity(0.7))
-                Text(dictationEngineDisplayName)
+                Text("Groq Whisper")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary.opacity(0.7))
             }
@@ -1190,23 +994,11 @@ struct MainAppView: View {
         }
     }
 
-    @ViewBuilder
     private var captureToNotesDescription: some View {
-        if !isStartupChecking && appState.backendStatus == .connected && !appState.backendManager.availableModels.isEmpty && !isCaptureModelDownloaded {
-            HStack(spacing: 4) {
-                Image(systemName: "arrow.down.circle.fill")
-                    .font(.system(size: 9))
-                Text("Download model in Settings")
-            }
+        Text(appState.isCaptureMode ? "Recording to Notes..." : "Record and save to Notes")
             .font(.system(size: 11))
-            .foregroundColor(.orange)
+            .foregroundColor(.secondary)
             .padding(.bottom, 14)
-        } else {
-            Text(appState.isCaptureMode ? "Recording to Notes..." : "Long-form transcription")
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-                .padding(.bottom, 14)
-        }
     }
 
     private var captureToNotesButton: some View {
@@ -1259,10 +1051,10 @@ struct MainAppView: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.red)
             } else {
-                Image(systemName: "cpu")
+                Image(systemName: "cloud.fill")
                     .font(.system(size: 9))
                     .foregroundColor(.secondary.opacity(0.7))
-                Text(modelDisplayName(appState.captureNotesModel))
+                Text("Groq Whisper")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary.opacity(0.7))
             }

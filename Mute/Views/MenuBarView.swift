@@ -14,10 +14,6 @@ struct MenuBarView: View {
     @State private var isHoveringImport = false
     @State private var showingFilePicker = false
 
-    private var isCloudMode: Bool {
-        TranscriptionBackend(rawValue: appState.transcriptionBackendRaw) == .groqWhisper
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             // Header with status
@@ -27,11 +23,6 @@ struct MenuBarView: View {
             VStack(spacing: 12) {
                 // Recording button
                 recordingButton
-
-                // Model download section (if needed)
-                if appState.modelStatus != .ready {
-                    modelSection
-                }
 
                 // Last transcription preview
                 if !appState.finalText.isEmpty && appState.recordingState == .done && !appState.isCaptureMode {
@@ -46,10 +37,8 @@ struct MenuBarView: View {
                 // Stats section
                 statsSection
 
-                // Audio file import (cloud mode only)
-                if isCloudMode {
-                    audioImportSection
-                }
+                // Audio file import
+                audioImportSection
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -100,10 +89,8 @@ struct MenuBarView: View {
 
             Spacer()
 
-            // Mode picker (cloud mode only)
-            if isCloudMode {
-                modePicker
-            }
+            // Mode picker
+            modePicker
 
             // Hotkey badge
             Text(hotkeyDisplay)
@@ -231,61 +218,6 @@ struct MenuBarView: View {
         case .recording: return .red
         case .processing: return .orange
         default: return .accentColor
-        }
-    }
-
-    // MARK: - Model Section
-    private var modelSection: some View {
-        VStack(spacing: 8) {
-            Button(action: {
-                Task {
-                    await appState.downloadModel()
-                }
-            }) {
-                HStack(spacing: 10) {
-                    if appState.modelStatus == .downloading {
-                        ProgressView()
-                            .scaleEffect(0.6)
-                            .frame(width: 16, height: 16)
-                    } else {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 14))
-                            .foregroundColor(.accentColor)
-                    }
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(appState.modelStatus == .downloading ? "Downloading..." : "Download Model")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.primary)
-
-                        if appState.modelStatus == .downloading {
-                            Text("\(Int(appState.modelDownloadProgress * 100))% complete")
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                        } else {
-                            Text("Required for transcription")
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.accentColor.opacity(0.1))
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(appState.modelStatus == .downloading)
-
-            if appState.modelStatus == .downloading {
-                ProgressView(value: appState.modelDownloadProgress)
-                    .progressViewStyle(.linear)
-                    .tint(.accentColor)
-            }
         }
     }
 

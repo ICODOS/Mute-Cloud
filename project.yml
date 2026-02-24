@@ -61,29 +61,6 @@ targets:
         CODE_SIGN_ENTITLEMENTS: TinyDictate/TinyDictate.entitlements
         LD_RUNPATH_SEARCH_PATHS: 
           - "@executable_path/../Frameworks"
-    preBuildScripts:
-      - name: "Verify Backend Files"
-        script: |
-          if [ ! -f "${SRCROOT}/backend/main.py" ]; then
-            echo "warning: Backend Python files not found. Run setup_backend.sh first."
-          fi
-        showEnvVars: false
-    postBuildScripts:
-      - name: "Copy Backend Files"
-        script: |
-          # Copy backend Python files to app bundle Resources
-          BACKEND_SRC="${SRCROOT}/backend"
-          BACKEND_DST="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources/backend"
-          
-          if [ -d "${BACKEND_SRC}" ]; then
-            mkdir -p "${BACKEND_DST}"
-            cp -R "${BACKEND_SRC}/"* "${BACKEND_DST}/"
-            echo "Backend files copied to ${BACKEND_DST}"
-          else
-            echo "warning: Backend source directory not found: ${BACKEND_SRC}"
-          fi
-        showEnvVars: false
-        basedOnDependencyAnalysis: false
 
 schemes:
   TinyDictate:

@@ -81,37 +81,3 @@ enum TranscriptionError: Error, LocalizedError {
     }
 }
 
-/// Available transcription backends
-enum TranscriptionBackend: String, CaseIterable, Identifiable {
-    case local = "local"
-    case groqWhisper = "groq"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .local:
-            return "Local (On-Device)"
-        case .groqWhisper:
-            return "Cloud: Groq - Whisper V3 Turbo"
-        }
-    }
-
-    var description: String {
-        switch self {
-        case .local:
-            return "Process audio locally using NVIDIA Parakeet or Whisper models. Private and offline."
-        case .groqWhisper:
-            return "Fast cloud transcription using Groq's Whisper Large V3 Turbo. Requires internet and API key."
-        }
-    }
-
-    var requiresInternet: Bool {
-        switch self {
-        case .local:
-            return false
-        case .groqWhisper:
-            return true
-        }
-    }
-}

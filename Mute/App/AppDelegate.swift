@@ -36,11 +36,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Setup overlay panel
         setupOverlayPanel()
 
-        // Start backend manager
-        Task {
-            await AppState.shared.backendManager.start()
-        }
-
         // Request microphone permission early
         Task {
             await AppState.shared.permissionManager.requestMicrophonePermission()
@@ -133,9 +128,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Stop backend process
-        AppState.shared.backendManager.stop()
-
         // Clean up overlay
         overlayPanel?.close()
 

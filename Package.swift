@@ -21,10 +21,7 @@ let package = Package(
             dependencies: [
                 "KeyboardShortcuts",
             ],
-            path: "Mute",
-            resources: [
-                .copy("../backend")
-            ]
+            path: "Mute"
         ),
     ]
 )

@@ -33,7 +33,7 @@ struct OnboardingView: View {
                 AccessibilityPermissionStep()
                     .tag(2)
                 
-                ModelDownloadStep()
+                APIKeySetupStep()
                     .tag(3)
             }
             .tabViewStyle(.automatic)
@@ -89,16 +89,16 @@ struct WelcomeStep: View {
                 .font(.title)
                 .fontWeight(.bold)
             
-            Text("Local speech-to-text transcription powered by NVIDIA Parakeet")
+            Text("Cloud speech-to-text powered by Groq")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
-            
+
             VStack(alignment: .leading, spacing: 12) {
-                FeatureRow(icon: "globe", title: "100% Local", description: "All transcription happens on your Mac")
-                FeatureRow(icon: "bolt.fill", title: "Fast & Accurate", description: "State-of-the-art speech recognition")
+                FeatureRow(icon: "bolt.fill", title: "Fast & Accurate", description: "State-of-the-art Whisper V3 Turbo")
                 FeatureRow(icon: "keyboard", title: "Global Hotkey", description: "Start dictating from any app")
                 FeatureRow(icon: "doc.on.clipboard", title: "Auto-Paste", description: "Text is automatically inserted")
+                FeatureRow(icon: "wand.and.stars", title: "Smart Modes", description: "Transform text with AI")
             }
             .padding(.top, 10)
         }
@@ -172,7 +172,7 @@ struct MicrophonePermissionStep: View {
                 }
             }
             
-            Text("Your audio never leaves your device.")
+            Text("Audio is sent to Groq for transcription.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -280,100 +280,90 @@ struct AccessibilityPermissionStep: View {
     }
 }
 
-// MARK: - Model Download Step
-struct ModelDownloadStep: View {
+// MARK: - API Key Setup Step
+struct APIKeySetupStep: View {
     @EnvironmentObject var appState: AppState
-    
+    @State private var apiKeyInput: String = ""
+    @State private var hasStoredKey: Bool = false
+    @State private var validationStatus: String = ""
+
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: "cpu")
+            Image(systemName: "key.fill")
                 .font(.system(size: 64))
                 .foregroundColor(.accentColor)
-            
-            Text("Download Model")
+
+            Text("Groq API Key")
                 .font(.title2)
                 .fontWeight(.bold)
-            
-            Text("Mute uses NVIDIA's Parakeet TDT v3 model for speech recognition. The model needs to be downloaded once (~2.5GB).")
+
+            Text("Mute uses Groq's cloud API for fast, accurate transcription. You'll need a free API key to get started.")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
-            
-            VStack(spacing: 8) {
+
+            VStack(spacing: 12) {
                 HStack {
-                    Text("Model:")
-                    Spacer()
-                    Text("nvidia/parakeet-tdt-0.6b-v3")
-                        .foregroundColor(.secondary)
-                }
-                HStack {
-                    Text("Size:")
-                    Spacer()
-                    Text("~2.5 GB")
-                        .foregroundColor(.secondary)
-                }
-                HStack {
-                    Text("Status:")
-                    Spacer()
-                    modelStatusView
-                }
-            }
-            .font(.caption)
-            .padding()
-            .background(Color.gray.opacity(0.1))
-            .cornerRadius(8)
-            
-            if appState.modelStatus == .downloading {
-                ProgressView(value: appState.modelDownloadProgress)
-                    .frame(width: 200)
-                Text("\(Int(appState.modelDownloadProgress * 100))%")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            } else if appState.modelStatus != .ready {
-                Button("Download Now") {
-                    Task {
-                        await appState.downloadModel()
+                    SecureField("gsk_...", text: $apiKeyInput)
+                        .textFieldStyle(.roundedBorder)
+
+                    if !apiKeyInput.isEmpty {
+                        Button("Save") {
+                            saveAPIKey()
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                
-                Text("You can also download later from Settings")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                .frame(width: 300)
+
+                // Status indicator
+                HStack {
+                    Circle()
+                        .fill(hasStoredKey ? Color.green : Color.orange)
+                        .frame(width: 8, height: 8)
+                    Text(hasStoredKey ? "API key saved" : (validationStatus.isEmpty ? "No API key configured" : validationStatus))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                // Get API Key link
+                Button(action: {
+                    NSWorkspace.shared.open(URL(string: "https://console.groq.com/keys")!)
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.caption)
+                        Text("Get a free API key from Groq Console")
+                            .font(.caption)
+                    }
+                }
+                .buttonStyle(.link)
             }
-        }
-        .padding(40)
-    }
-    
-    @ViewBuilder
-    private var modelStatusView: some View {
-        HStack {
-            Circle()
-                .fill(modelStatusColor)
-                .frame(width: 8, height: 8)
-            Text(modelStatusText)
+
+            Text("You can set this up later in Settings.")
+                .font(.caption)
                 .foregroundColor(.secondary)
         }
-    }
-    
-    private var modelStatusColor: Color {
-        switch appState.modelStatus {
-        case .ready: return .green
-        case .downloading: return .orange
-        case .error: return .red
-        default: return .gray
+        .padding(40)
+        .onAppear {
+            refreshKeyStatus()
         }
     }
-    
-    private var modelStatusText: String {
-        switch appState.modelStatus {
-        case .unknown: return "Checking..."
-        case .notDownloaded: return "Not Downloaded"
-        case .downloading: return "Downloading..."
-        case .downloaded: return "Downloaded"
-        case .loading: return "Loading..."
-        case .ready: return "Ready"
-        case .error(let msg): return "Error: \(msg)"
+
+    private func saveAPIKey() {
+        let trimmed = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        if KeychainManager.shared.setGroqAPIKey(trimmed) {
+            hasStoredKey = true
+            validationStatus = ""
+            apiKeyInput = ""
+        } else {
+            validationStatus = "Failed to save key"
         }
+    }
+
+    private func refreshKeyStatus() {
+        hasStoredKey = KeychainManager.shared.getGroqAPIKey() != nil
     }
 }

@@ -5,30 +5,6 @@ import Foundation
 import SwiftUI
 import Combine
 
-// MARK: - Thread-Safe Bool for Cross-Actor Access
-/// A simple thread-safe boolean wrapper for use across actor boundaries
-final class AtomicBool: @unchecked Sendable {
-    private var _value: Bool
-    private let lock = NSLock()
-
-    init(_ value: Bool) {
-        self._value = value
-    }
-
-    var value: Bool {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return _value
-        }
-        set {
-            lock.lock()
-            defer { lock.unlock() }
-            _value = newValue
-        }
-    }
-}
-
 // MARK: - Recording State
 enum RecordingState: Equatable {
     case idle
@@ -36,7 +12,7 @@ enum RecordingState: Equatable {
     case processing
     case done
     case error(String)
-    
+
     static func == (lhs: RecordingState, rhs: RecordingState) -> Bool {
         switch (lhs, rhs) {
         case (.idle, .idle), (.recording, .recording), (.processing, .processing), (.done, .done):
@@ -53,14 +29,10 @@ enum RecordingState: Equatable {
 @MainActor
 class AppState: ObservableObject {
     static let shared = AppState()
-    
+
     // MARK: - Published Properties
     @Published var recordingState: RecordingState = .idle
-    @Published var partialText: String = ""
     @Published var finalText: String = ""
-    @Published var backendStatus: BackendStatus = .disconnected
-    @Published var modelStatus: ModelStatus = .unknown
-    @Published var modelDownloadProgress: Double = 0.0
     @Published var errorMessage: String?
     @Published var logs: [Logger.LogEntry] = []
 
@@ -69,18 +41,10 @@ class AppState: ObservableObject {
     @Published var captureNoteId: String?
     private var pendingCaptureNoteId: String?  // Stores note ID when stopping capture, before final transcription
 
-    // MARK: - Continuous Capture State
-    private var captureIntervalTimer: Timer?
-
     // MARK: - Processing Timeout
     private var processingTimeoutTask: Task<Void, Never>?
     private var recordingStartTime: Date?
 
-    // MARK: - Solution C: Parallel Audio/Backend Initialization
-    // Thread-safe flag to track if backend is ready to receive audio data
-    // Using a class wrapper to allow safe capture in closures across actor boundaries
-    private let audioSendingEnabled = AtomicBool(false)
-    
     // MARK: - Settings
     @AppStorage("pasteOnStop") var pasteOnStop: Bool = true
     @AppStorage("showOverlay") var showOverlay: Bool = true
@@ -88,31 +52,9 @@ class AppState: ObservableObject {
     @AppStorage("developerMode") var developerMode: Bool = false
     @AppStorage("selectedAudioDevice") var selectedAudioDeviceUID: String = ""
     @AppStorage("hasCompletedOnboarding") var hasCompletedOnboarding: Bool = false
-
-    // MARK: - Model Selection
-    @AppStorage("dictationModel") var dictationModel: String = "parakeet"
-    @AppStorage("captureNotesModel") var captureNotesModel: String = "base"  // Must be Whisper for word timestamps
-
-    // MARK: - Continuous Capture Settings
-    @AppStorage("continuousCaptureMode") var continuousCaptureMode: Bool = false
-    let captureInterval: Double = 15.0  // Fixed 15s interval for optimal transcription
-    @AppStorage("enableDiarization") var enableDiarization: Bool = false  // Speaker identification
     @AppStorage("captureNotesAudioDevice") var captureNotesAudioDeviceUID: String = ""  // Separate device for Capture to Notes
 
-    // MARK: - Performance Settings
-    @AppStorage("keepDictationModelReady") var keepDictationModelReady: Bool = false
-    @AppStorage("keepCaptureModelReady") var keepCaptureModelReady: Bool = false
-    @AppStorage("keepModelWarmDuration") var keepModelWarmDuration: String = "4h"
-
     // MARK: - Cloud Transcription Settings
-    @AppStorage("transcriptionBackend") var transcriptionBackendRaw: String = TranscriptionBackend.local.rawValue
-
-    /// The selected transcription backend (local or cloud)
-    var transcriptionBackend: TranscriptionBackend {
-        get { TranscriptionBackend(rawValue: transcriptionBackendRaw) ?? .local }
-        set { transcriptionBackendRaw = newValue.rawValue }
-    }
-
     /// Optional language hint for cloud transcription (e.g., "en", "de")
     @AppStorage("cloudTranscriptionLanguage") var cloudTranscriptionLanguage: String = ""
 
@@ -155,10 +97,9 @@ class AppState: ObservableObject {
             _currentStreak = newValue
         }
     }
-    
+
     // MARK: - Managers
     let audioManager = AudioCaptureManager()
-    let backendManager = BackendManager()
     let textInsertionService = TextInsertionService()
     let permissionManager = PermissionManager()
     let notesIntegrationService = NotesIntegrationService()
@@ -179,22 +120,16 @@ class AppState: ObservableObject {
     @Published var fileTranscriptionProgressValue: Double = 0.0
     @Published var fileTranscriptionCompleted: Bool = false
     @Published var fileTranscriptionError: Bool = false
-    
+
     // MARK: - Overlay
     weak var overlayPanel: OverlayPanel?
-    
+
     // MARK: - Private
     private var cancellables = Set<AnyCancellable>()
     private var doneTimer: Timer?
-    
+
     // MARK: - Initialization
     private init() {
-        // Migrate captureNotesModel if it was set to parakeet (doesn't support word timestamps)
-        if captureNotesModel == "parakeet" {
-            Logger.shared.log("Migrating captureNotesModel from 'parakeet' to 'base' (word timestamps required)")
-            captureNotesModel = "base"
-        }
-
         // Refresh usage stats on launch (reset day/week counters if needed)
         refreshDayIfNeeded()
         refreshWeekIfNeeded()
@@ -270,50 +205,8 @@ class AppState: ObservableObject {
             totalWordsEstimate = totalDictations * 25
         }
     }
-    
-    private func setupBindings() {
-        // Bind backend status
-        backendManager.$status
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] status in
-                self?.backendStatus = status
-                // Auto-clear "Backend not ready" error when backend connects
-                if status == .connected {
-                    if case .error(let msg) = self?.recordingState, msg.contains("Backend") {
-                        self?.recordingState = .idle
-                        self?.errorMessage = nil
-                    }
-                    // Sync keep-warm settings with backend on connect/reconnect
-                    if let self = self {
-                        self.syncKeepWarmSettings()
-                    }
-                }
-            }
-            .store(in: &cancellables)
-        
-        // Bind model status
-        backendManager.$modelStatus
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] status in
-                self?.modelStatus = status
-                // Auto-clear error when model becomes ready
-                if status == .ready {
-                    if case .error(let msg) = self?.recordingState, msg.contains("Backend") || msg.contains("Model") {
-                        self?.recordingState = .idle
-                        self?.errorMessage = nil
-                    }
-                }
-            }
-            .store(in: &cancellables)
-        
-        // Bind download progress
-        backendManager.$downloadProgress
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] progress in
-                self?.modelDownloadProgress = progress
-            }
-            .store(in: &cancellables)
 
+    private func setupBindings() {
         // Monitor audio device changes - reset selected device if it disconnects
         AudioDeviceMonitor.shared.$inputDevices
             .receive(on: DispatchQueue.main)
@@ -321,41 +214,6 @@ class AppState: ObservableObject {
                 self?.validateSelectedAudioDevices(availableDevices: devices)
             }
             .store(in: &cancellables)
-
-        // Handle partial transcriptions
-        backendManager.onPartialTranscription = { [weak self] text in
-            Task { @MainActor in
-                self?.handlePartialTranscription(text)
-            }
-        }
-        
-        // Handle final transcription
-        backendManager.onFinalTranscription = { [weak self] text in
-            Task { @MainActor in
-                self?.handleFinalTranscription(text)
-            }
-        }
-        
-        // Handle errors
-        backendManager.onError = { [weak self] error in
-            Task { @MainActor in
-                self?.handleError(error)
-            }
-        }
-
-        // Handle recording auto-stop (e.g., max duration reached)
-        backendManager.onRecordingStopping = { [weak self] message in
-            Task { @MainActor in
-                self?.handleRecordingStopping(message)
-            }
-        }
-
-        // Handle interval transcriptions for continuous capture
-        backendManager.onIntervalTranscription = { [weak self] text in
-            Task { @MainActor in
-                self?.handleIntervalTranscription(text)
-            }
-        }
     }
 
     // MARK: - Audio Device Validation
@@ -401,38 +259,8 @@ class AppState: ObservableObject {
                 return
             }
         }
-        
-        // Check backend - but be more lenient, check modelStatus too
-        if backendStatus != .connected {
-            // If model is ready, the backend should be connected soon
-            if modelStatus == .ready {
-                // Give it a moment
-                try? await Task.sleep(nanoseconds: 500_000_000)  // 0.5 seconds
-            }
 
-            if backendStatus != .connected {
-                errorMessage = "Backend not connected. Please wait or restart."
-                recordingState = .error("Backend not ready")
-                return
-            }
-        }
-
-        // Verify connection is actually healthy (not stale)
-        let isHealthy = await backendManager.verifyConnection()
-        if !isHealthy {
-            Logger.shared.log("Connection stale, restarting backend...", level: .warning)
-            await backendManager.restart()
-            // Wait for reconnection
-            try? await Task.sleep(nanoseconds: 3_000_000_000)  // 3 seconds
-            if backendStatus != .connected {
-                errorMessage = "Connection lost. Please try again."
-                recordingState = .error("Connection lost")
-                return
-            }
-        }
-        
         // Reset state
-        partialText = ""
         finalText = ""
         errorMessage = nil
 
@@ -440,23 +268,18 @@ class AppState: ObservableObject {
         cloudTranscriptionTask?.cancel()
         cloudTranscriptionTask = nil
 
-        // Set up cloud audio recording if using cloud backend
-        if transcriptionBackend == .groqWhisper {
-            // Validate Groq configuration
-            let validation = groqProvider.validateConfiguration()
-            if !validation.isValid {
-                Logger.shared.log("Groq configuration invalid: \(validation.errorMessage ?? "unknown")", level: .error)
-                errorMessage = validation.errorMessage
-                recordingState = .error(validation.errorMessage ?? "Groq not configured")
-                return
-            }
-            cloudAudioFileManager = AudioFileManager()
-            Logger.shared.log("Cloud transcription enabled - recording audio for Groq upload")
-        } else {
-            cloudAudioFileManager = nil
+        // Validate Groq configuration
+        let validation = groqProvider.validateConfiguration()
+        if !validation.isValid {
+            Logger.shared.log("Groq configuration invalid: \(validation.errorMessage ?? "unknown")", level: .error)
+            errorMessage = validation.errorMessage
+            recordingState = .error(validation.errorMessage ?? "Groq not configured")
+            return
         }
+        cloudAudioFileManager = AudioFileManager()
+        Logger.shared.log("Cloud transcription enabled - recording audio for Groq upload")
 
-        // Update state to show we're preparing
+        // Update state to show we're recording
         recordingState = .recording
         recordingStartTime = Date()
 
@@ -465,141 +288,30 @@ class AppState: ObservableObject {
             overlayPanel?.show(state: .recording)
         }
 
-        // Determine which model to use
-        let modelToUse = isCaptureMode ? captureNotesModel : dictationModel
-        let diarizationEnabled = isCaptureMode && enableDiarization
         let deviceUID = isCaptureMode ? captureNotesAudioDeviceUID : selectedAudioDeviceUID
-
-        // Solution C: Parallel Audio + Backend Initialization
-        // Start audio capture immediately to trigger Bluetooth mode switch
-        // while backend prepares in parallel
-        Logger.shared.log("Starting parallel initialization: audio capture + backend preparation")
-
-        // Reset the backend-ready flag
-        audioSendingEnabled.value = false
-
-        // Declare outside do block so we can cancel in catch
-        var backendReadyTask: Task<Bool, Never>?
+        let cloudAudioManager = self.cloudAudioFileManager
 
         do {
-            // Solution C: Parallel Audio + Backend Initialization
-            // Start backend preparation first (non-blocking), then audio capture
             let audioStartTime = Date()
 
-            // Capture references for the audio callback (thread-safe)
-            let sendingEnabled = self.audioSendingEnabled
-            let backend = self.backendManager
-            let cloudAudioManager = self.cloudAudioFileManager
-            let isCloudMode = self.transcriptionBackend == .groqWhisper
-
-            // Start backend preparation FIRST (async, non-blocking)
-            // This runs concurrently while we set up audio
-            // Skip for cloud transcription - we don't need local backend
-            if !isCloudMode {
-                Logger.shared.log("Requesting backend to prepare model: \(modelToUse)")
-                backendReadyTask = Task { [weak self] () -> Bool in
-                    guard let self = self else { return false }
-                    return await self.waitForRecordingReady(model: modelToUse, diarizationEnabled: diarizationEnabled)
-                }
-            } else {
-                Logger.shared.log("Cloud mode - skipping local backend preparation")
-            }
-
-            // Now start audio capture (this blocks waiting for Bluetooth mode switch)
-            // The callback only sends data when backend is ready (thread-safe check)
+            // Start audio capture - callback saves audio for cloud transcription
             try audioManager.startCapture(
                 deviceUID: deviceUID.isEmpty ? nil : deviceUID,
                 chunkSizeMs: 400
             ) { audioData in
-                // Save audio for cloud transcription
-                if isCloudMode {
-                    cloudAudioManager?.appendAudioData(audioData)
-                }
-
-                // Only send audio to local backend if backend is ready and not in cloud mode
-                guard !isCloudMode, sendingEnabled.value else { return }
-                Task {
-                    await backend.sendAudioChunk(audioData)
-                }
+                cloudAudioManager?.appendAudioData(audioData)
             }
 
-            Logger.shared.log("Audio capture started, checking backend status...")
-
-            // Wait for backend to be ready (with timeout) - skip for cloud mode
-            if !isCloudMode {
-                // Backend preparation was running in parallel with audio setup
-                let backendReady = try await withTimeout(seconds: 30) {
-                    await backendReadyTask!.value
-                }
-
-                guard backendReady else {
-                    throw NSError(domain: "AppState", code: 1, userInfo: [NSLocalizedDescriptionKey: "Backend did not become ready in time"])
-                }
-
-                // Now enable audio sending - backend is ready
-                audioSendingEnabled.value = true
-
-                let initTime = Date().timeIntervalSince(audioStartTime) * 1000
-                Logger.shared.log("Initialization complete in \(Int(initTime))ms - backend ready, audio flowing")
-                Logger.shared.log("Recording started with model: \(modelToUse), diarization: \(diarizationEnabled)")
-            } else {
-                let initTime = Date().timeIntervalSince(audioStartTime) * 1000
-                Logger.shared.log("Cloud recording started in \(Int(initTime))ms - audio being buffered for upload")
-            }
+            let initTime = Date().timeIntervalSince(audioStartTime) * 1000
+            Logger.shared.log("Cloud recording started in \(Int(initTime))ms - audio being buffered for upload")
         } catch {
             Logger.shared.log("Failed to start recording: \(error)", level: .error)
-
-            // Cancel the backend ready task if it's still running
-            backendReadyTask?.cancel()
-
-            // Tell backend to stop recording (it may have started)
-            Task {
-                await backendManager.stopTranscription()
-            }
-
-            audioManager.stopCapture()  // Clean up audio if it started
-            audioSendingEnabled.value = false
+            audioManager.stopCapture()
             recordingState = .error(error.localizedDescription)
             overlayPanel?.show(state: .error)
         }
     }
 
-    /// Wait for the backend to signal it's ready for recording
-    private func waitForRecordingReady(model: String, diarizationEnabled: Bool) async -> Bool {
-        return await withCheckedContinuation { continuation in
-            // Set up the callback before sending the start command
-            backendManager.onRecordingReady = { _ in
-                continuation.resume(returning: true)
-            }
-
-            // Send start command to backend
-            Task {
-                await backendManager.startTranscription(
-                    model: model,
-                    enableDiarization: diarizationEnabled
-                )
-            }
-        }
-    }
-
-    /// Execute an async operation with a timeout
-    private func withTimeout<T>(seconds: Double, operation: @escaping () async -> T) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask {
-                await operation()
-            }
-
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                throw NSError(domain: "Timeout", code: 1, userInfo: [NSLocalizedDescriptionKey: "Operation timed out"])
-            }
-
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
-        }
-    }
-    
     func stopRecording() async {
         guard recordingState == .recording else {
             Logger.shared.log("Cannot stop recording in state: \(recordingState)")
@@ -615,48 +327,10 @@ class AppState: ObservableObject {
         }
 
         // Stop audio capture
-        audioSendingEnabled.value = false  // Stop sending audio immediately
         audioManager.stopCapture()
 
-        // Branch based on transcription backend
-        if transcriptionBackend == .groqWhisper {
-            await stopRecordingCloud()
-        } else {
-            await stopRecordingLocal()
-        }
-    }
-
-    /// Stop recording and send to local backend
-    private func stopRecordingLocal() async {
-        // Send stop command to backend
-        await backendManager.stopTranscription()
-
-        Logger.shared.log("Recording stopped, waiting for final transcription")
-
-        // Cancel any existing timeout task before starting a new one
-        processingTimeoutTask?.cancel()
-
-        // Calculate adaptive timeout based on recording duration
-        // Minimum 30 seconds, or 1.5x the recording duration (whichever is greater)
-        // This ensures longer recordings have enough time to process
-        let recordingDuration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 30.0
-        let timeoutSeconds = max(30.0, recordingDuration * 1.5)
-        let timeoutNanos = UInt64(timeoutSeconds * 1_000_000_000)
-        Logger.shared.log(String(format: "Processing timeout set to %.0f seconds for %.1f seconds of audio", timeoutSeconds, recordingDuration))
-
-        // Add timeout for processing state - adaptive based on recording length
-        processingTimeoutTask = Task {
-            try? await Task.sleep(nanoseconds: timeoutNanos)
-            guard !Task.isCancelled else { return }
-            if recordingState == .processing {
-                Logger.shared.log("Processing timeout - backend may be unresponsive", level: .warning)
-                recordingState = .error("Processing timeout - please try again")
-                overlayPanel?.show(state: .error)
-
-                // Try to restart backend connection
-                await backendManager.restart()
-            }
-        }
+        // Always use cloud transcription
+        await stopRecordingCloud()
     }
 
     /// Stop recording and send to Groq cloud API
@@ -774,12 +448,10 @@ class AppState: ObservableObject {
         cloudAudioFileManager = nil
 
         // Stop audio capture without processing
-        audioSendingEnabled.value = false  // Stop sending audio immediately
         audioManager.stopCapture()
 
         // Reset state
         recordingState = .idle
-        partialText = ""
         finalText = ""
 
         // Hide overlay
@@ -807,22 +479,13 @@ class AppState: ObservableObject {
     // MARK: - Capture Mode Control
     func startCaptureMode() async {
         Logger.shared.log("=== STARTING CAPTURE MODE ===")
-        Logger.shared.log("Continuous capture enabled: \(continuousCaptureMode)")
-        Logger.shared.log("Capture interval: \(captureInterval)s")
-        Logger.shared.log("Capture notes model: \(captureNotesModel)")
 
-        // Check if the required model is downloaded
-        let modelInfo = backendManager.availableModels.first { $0.id == captureNotesModel }
-        if let model = modelInfo, !model.downloaded {
-            Logger.shared.log("Model \(captureNotesModel) not downloaded", level: .error)
-            errorMessage = "Please download the \(model.name) model first in Settings → Model tab"
-            recordingState = .error("Model not downloaded")
-            return
-        } else if modelInfo == nil && !backendManager.availableModels.isEmpty {
-            // Model not found in available models list
-            Logger.shared.log("Model \(captureNotesModel) not found in available models", level: .error)
-            errorMessage = "Selected model not available. Please choose a different model in Settings."
-            recordingState = .error("Model not available")
+        // Validate Groq configuration
+        let validation = groqProvider.validateConfiguration()
+        if !validation.isValid {
+            Logger.shared.log("Groq configuration invalid: \(validation.errorMessage ?? "unknown")", level: .error)
+            errorMessage = validation.errorMessage
+            recordingState = .error(validation.errorMessage ?? "Groq not configured")
             return
         }
 
@@ -842,13 +505,8 @@ class AppState: ObservableObject {
             Logger.shared.log("Created note with ID: \(captureNoteId ?? "nil")")
             isCaptureMode = true
 
-            // Start recording in continuous mode
+            // Start recording
             await startRecording()
-
-            // Start interval timer if continuous capture is enabled
-            if continuousCaptureMode {
-                startCaptureIntervalTimer()
-            }
         } catch {
             Logger.shared.log("Failed to create note: \(error)", level: .error)
             errorMessage = "Failed to create note: \(error.localizedDescription)"
@@ -860,9 +518,6 @@ class AppState: ObservableObject {
 
     func stopCaptureMode() async {
         guard isCaptureMode else { return }
-
-        // Stop interval timer first
-        stopCaptureIntervalTimer()
 
         // Store the note ID before stopping - we need it for the final transcription
         pendingCaptureNoteId = captureNoteId
@@ -886,79 +541,14 @@ class AppState: ObservableObject {
         }
     }
 
-    // MARK: - Continuous Capture Timer
-    private func startCaptureIntervalTimer() {
-        captureIntervalTimer?.invalidate()
-        captureIntervalTimer = Timer.scheduledTimer(
-            withTimeInterval: captureInterval,
-            repeats: true
-        ) { [weak self] _ in
-            Task { @MainActor in
-                await self?.requestIntervalTranscription()
-            }
-        }
-        Logger.shared.log("Started capture interval timer: \(captureInterval)s")
-    }
-
-    private func stopCaptureIntervalTimer() {
-        captureIntervalTimer?.invalidate()
-        captureIntervalTimer = nil
-        Logger.shared.log("Stopped capture interval timer")
-    }
-
-    private func requestIntervalTranscription() async {
-        guard isCaptureMode, continuousCaptureMode else { return }
-        await backendManager.requestIntervalTranscription()
-    }
-
-    private func handleIntervalTranscription(_ text: String) {
-        Logger.shared.log("=== INTERVAL TRANSCRIPTION RECEIVED ===")
-        Logger.shared.log("isCaptureMode: \(isCaptureMode), noteId: \(captureNoteId ?? "nil")")
-        Logger.shared.log("Raw text length: \(text.count)")
-
-        guard isCaptureMode, let noteId = captureNoteId else {
-            Logger.shared.log("Skipping interval - not in capture mode or no note ID")
-            return
-        }
-
-        let textToAppend = text.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !textToAppend.isEmpty else {
-            Logger.shared.log("Interval transcription: empty text after trimming, skipping")
-            return
-        }
-
-        Logger.shared.log("Appending to note: '\(textToAppend)'")
-
-        // Append the new text to note
-        Task {
-            do {
-                try await notesIntegrationService.appendToNote(noteId: noteId, text: textToAppend)
-                Logger.shared.log("Successfully appended to note")
-            } catch {
-                Logger.shared.log("Failed to append interval transcription: \(error)", level: .error)
-            }
-        }
-    }
-
     // MARK: - Transcription Handlers
-    private func handlePartialTranscription(_ text: String) {
-        partialText = text
-
-        // Update overlay with partial text if enabled
-        if showOverlay && developerMode {
-            overlayPanel?.updatePartialText(text)
-        }
-    }
-    
     private func handleFinalTranscription(_ text: String) {
         // Cancel processing timeout since we received a response
         processingTimeoutTask?.cancel()
         processingTimeoutTask = nil
 
-        // Check if we need to apply a transformation (cloud mode only)
-        if transcriptionBackend == .groqWhisper,
-           let mode = modeManager.dictationMode,
+        // Check if we need to apply a transformation
+        if let mode = modeManager.dictationMode,
            mode.hasTransformation {
             // Apply transformation before proceeding
             Task {
@@ -1084,40 +674,6 @@ class AppState: ObservableObject {
             }
         }
     }
-    
-    private func handleRecordingStopping(_ message: String) {
-        // Recording was auto-stopped (e.g., max duration reached)
-        // The backend will continue to transcribe, so transition to processing state
-        Logger.shared.log("Recording auto-stopped: \(message)")
-
-        // Stop audio capture (backend already stopped receiving)
-        audioManager.stopCapture()
-
-        // Transition to processing state (transcription is happening)
-        recordingState = .processing
-
-        if showOverlay {
-            overlayPanel?.show(state: .processing)
-        }
-
-        // Set up adaptive timeout based on recording duration
-        processingTimeoutTask?.cancel()
-        let recordingDuration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 300.0
-        let timeoutSeconds = max(30.0, recordingDuration * 1.5)
-        let timeoutNanos = UInt64(timeoutSeconds * 1_000_000_000)
-        Logger.shared.log(String(format: "Processing timeout set to %.0f seconds for %.1f seconds of audio", timeoutSeconds, recordingDuration))
-
-        processingTimeoutTask = Task {
-            try? await Task.sleep(nanoseconds: timeoutNanos)
-            guard !Task.isCancelled else { return }
-            if recordingState == .processing {
-                Logger.shared.log("Processing timeout - backend may be unresponsive", level: .warning)
-                recordingState = .error("Processing timeout - please try again")
-                overlayPanel?.show(state: .error)
-                await backendManager.restart()
-            }
-        }
-    }
 
     private func handleError(_ error: String) {
         // Cancel any processing timeout
@@ -1136,34 +692,7 @@ class AppState: ObservableObject {
 
         Logger.shared.log("Error: \(error)", level: .error)
     }
-    
-    // MARK: - Model Management
-    func downloadModel() async {
-        await backendManager.downloadModel()
-    }
 
-    func clearModelCache() {
-        backendManager.clearModelCache()
-    }
-
-    /// Sync keep-warm settings with backend
-    func syncKeepWarmSettings() {
-        var modelsToKeepWarm: [String] = []
-
-        if keepDictationModelReady {
-            modelsToKeepWarm.append(dictationModel)
-        }
-
-        if keepCaptureModelReady && !modelsToKeepWarm.contains(captureNotesModel) {
-            modelsToKeepWarm.append(captureNotesModel)
-        }
-
-        backendManager.sendKeepWarmSettings(
-            models: modelsToKeepWarm,
-            duration: keepModelWarmDuration
-        )
-    }
-    
     // MARK: - Utility
     func refreshLogs() {
         logs = Logger.shared.getLogs()
@@ -1403,24 +932,4 @@ class AppState: ObservableObject {
         return dateString == currentDateString()
     }
 
-}
-
-
-// MARK: - Backend Status
-enum BackendStatus: Equatable {
-    case disconnected
-    case connecting
-    case connected
-    case error(String)
-}
-
-// MARK: - Model Status
-enum ModelStatus: Equatable {
-    case unknown
-    case notDownloaded
-    case downloading
-    case downloaded
-    case loading
-    case ready
-    case error(String)
 }

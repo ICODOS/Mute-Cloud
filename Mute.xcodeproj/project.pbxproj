@@ -15,6 +15,7 @@
 		3C95D72D5B66669670D7DF9D /* GroqChatProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9E8BA9500D9E2CC7A689937 /* GroqChatProvider.swift */; };
 		44AFC008628CF6696A94CDE4 /* MuteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A22A2FCFFACA3904685D1C6 /* MuteApp.swift */; };
 		53AACCDFF2BD2FD935915007 /* KeychainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF2EEC7FCBC0B2463452D83A /* KeychainManager.swift */; };
+		5C6EA394DCE37E0A0047E5BA /* HotkeyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 839AFB1296483F6572C197BA /* HotkeyService.swift */; };
 		6405578BCF92F61C96225C3B /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C606AACA1E360471045EB567 /* MenuBarView.swift */; };
 		64C8804CB8F639D59F33D118 /* AudioFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F4A5A84651663B20CCDCBA2 /* AudioFileManager.swift */; };
 		689EA065D780B98738734E17 /* TranscriptionMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A68DD08B3028DE450159D4 /* TranscriptionMode.swift */; };
@@ -43,6 +44,7 @@
 		6EE9FFD5C464D515350B9CDA /* OverlayPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayPanel.swift; sourceTree = "<group>"; };
 		78E0703A3EDFCA963F8B1AC7 /* NotesIntegrationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesIntegrationService.swift; sourceTree = "<group>"; };
 		7F4A5A84651663B20CCDCBA2 /* AudioFileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioFileManager.swift; sourceTree = "<group>"; };
+		839AFB1296483F6572C197BA /* HotkeyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyService.swift; sourceTree = "<group>"; };
 		8826DF86EE0096B3513EBB85 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		9A22A2FCFFACA3904685D1C6 /* MuteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MuteApp.swift; sourceTree = "<group>"; };
 		A1DB46C26894F83997C99660 /* TranscriptionProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionProvider.swift; sourceTree = "<group>"; };
@@ -123,6 +125,7 @@
 				BCB97A9F5BD72B6BE7747B63 /* AudioFileTranscriber.swift */,
 				B9E8BA9500D9E2CC7A689937 /* GroqChatProvider.swift */,
 				ADFB2D2D7F40C6B3D1762DF9 /* GroqWhisperProvider.swift */,
+				839AFB1296483F6572C197BA /* HotkeyService.swift */,
 				CF2EEC7FCBC0B2463452D83A /* KeychainManager.swift */,
 				78E0703A3EDFCA963F8B1AC7 /* NotesIntegrationService.swift */,
 				41A7AFAF5368EA935A9DEBFE /* PermissionManager.swift */,
@@ -243,6 +246,7 @@
 				3C95D72D5B66669670D7DF9D /* GroqChatProvider.swift in Sources */,
 				D49555A8497496475FAE5B4B /* GroqWhisperProvider.swift in Sources */,
 				1B8EFC7C3D258C9B4977474B /* GroqWhisperProviderTests.swift in Sources */,
+				5C6EA394DCE37E0A0047E5BA /* HotkeyService.swift in Sources */,
 				53AACCDFF2BD2FD935915007 /* KeychainManager.swift in Sources */,
 				6405578BCF92F61C96225C3B /* MenuBarView.swift in Sources */,
 				44AFC008628CF6696A94CDE4 /* MuteApp.swift in Sources */,

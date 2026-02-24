@@ -8,31 +8,15 @@ import Carbon.HIToolbox
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var overlayPanel: OverlayPanel?
-    private var statusItem: NSStatusItem?
-    private var globalEventMonitor: Any?
-    private var localEventMonitor: Any?
-    private var stopGlobalEventMonitor: Any?
-    private var stopLocalEventMonitor: Any?
-    private var lastModifierState: NSEvent.ModifierFlags = []
     private var settingsWindow: NSWindow?
-
-    // Modes hotkey monitors
-    private var modesHotkeyGlobalMonitor: Any?
-    private var modesHotkeyLocalMonitor: Any?
-    private var modesLastModifierState: NSEvent.ModifierFlags = []
-    // For two-key combo detection
-    private var modesFirstKeyDown: Bool = false
-    private var modesSecondKeyDown: Bool = false
-    private var modesOverlayHideWorkItem: DispatchWorkItem?
+    private static var modesOverlayHideWorkItem: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Show app in Dock (regular app, not menu-bar-only)
         NSApp.setActivationPolicy(.regular)
 
-        // Setup global hotkeys
-        setupHotkey()
-        setupStopHotkey()
-        setupModesHotkey()
+        // Setup global hotkeys via HotkeyService (uses Carbon registration for standard combos)
+        HotkeyService.shared.setupAllHotkeys()
 
         // Setup overlay panel
         setupOverlayPanel()
@@ -47,7 +31,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
         }
 
-        // Listen for hotkey changes
+        // Listen for hotkey changes — delegate to HotkeyService
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(hotkeyDidChange),
@@ -60,6 +44,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             name: .stopHotkeyDidChange,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(modesHotkeyDidChange),
+            name: .modesHotkeyDidChange,
+            object: nil
+        )
 
         // Listen for settings open requests
         NotificationCenter.default.addObserver(
@@ -68,37 +58,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             name: .openSettingsRequested,
             object: nil
         )
+    }
 
-        // Listen for modes hotkey changes
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(modesHotkeyDidChange),
-            name: .modesHotkeyDidChange,
-            object: nil
-        )
+    @objc private func hotkeyDidChange() {
+        HotkeyService.shared.reconfigureToggleRecording()
+    }
+
+    @objc private func stopHotkeyDidChange() {
+        HotkeyService.shared.reconfigureStopHotkey()
     }
 
     @objc private func modesHotkeyDidChange() {
-        // Re-setup modes hotkey when it changes
-        removeModesHotkeyMonitors()
-        setupModesHotkey()
+        HotkeyService.shared.reconfigureModesHotkey()
     }
 
     /// Opens the Settings window by programmatically invoking the Settings menu item.
-    ///
-    /// ## Why This Approach
-    /// On macOS 14+ with SwiftUI's `Settings` scene:
-    /// - `@Environment(\.openSettings)` doesn't work in MenuBarExtra/popover contexts
-    /// - `NSApp.sendAction(Selector(("showSettingsWindow:")))` doesn't connect to SwiftUI Settings
-    /// - The only reliable method is to find and invoke the "Settings…" menu item directly
-    ///
-    /// ## Flow
-    /// 1. Close any MenuBarExtra popups (they can interfere with settings opening)
-    /// 2. Activate the app (required for menu actions to work)
-    /// 3. Find the "Settings…" menu item in the app menu
-    /// 4. Invoke its action via `NSApp.sendAction`
-    ///
-    /// - Note: Called via `.openSettingsRequested` notification from `SettingsCoordinator`.
     @objc private func openSettingsWindow() {
         // Close any MenuBarExtra popup windows first (they can block settings from appearing)
         for window in NSApp.windows {
@@ -130,15 +104,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         // Clean up overlay timer and panel
-        modesOverlayHideWorkItem?.cancel()
-        modesOverlayHideWorkItem = nil
+        Self.modesOverlayHideWorkItem?.cancel()
+        Self.modesOverlayHideWorkItem = nil
         overlayPanel?.close()
 
-        // Remove event monitors
-        removeEventMonitors()
-        removeModesHotkeyMonitors()
+        // Clean up all hotkey registrations
+        HotkeyService.shared.teardownAllHotkeys()
     }
-    
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         // Don't quit when window is closed - keep running in menu bar
         return false
@@ -153,13 +126,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Also handle when app is activated (clicked in Dock)
     func applicationDidBecomeActive(_ notification: Notification) {
         // Re-setup modes hotkey global monitor if accessibility was granted after initial setup
-        if AXIsProcessTrusted() && modesHotkeyGlobalMonitor == nil {
-            let config = ModesHotkeyConfig.load()
-            if config.isEnabled {
-                removeModesHotkeyMonitors()
-                setupModesHotkey()
-            }
-        }
+        HotkeyService.shared.reSetupModesIfNeeded()
 
         let visibleWindows = NSApp.windows.filter {
             $0.isVisible && $0.level == .normal && !$0.className.contains("MenuBarExtra")
@@ -198,308 +165,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         Logger.shared.log("Main app window opened")
     }
-    
-    @objc private func hotkeyDidChange() {
-        // Re-setup hotkey when it changes
-        removeEventMonitors()
-        setupHotkey()
+
+    private func setupOverlayPanel() {
+        overlayPanel = OverlayPanel()
+        AppState.shared.overlayPanel = overlayPanel
     }
 
-    @objc private func stopHotkeyDidChange() {
-        // Re-setup stop hotkey when it changes
-        removeStopEventMonitors()
-        setupStopHotkey()
-    }
-    
-    private func removeEventMonitors() {
-        if let monitor = globalEventMonitor {
-            NSEvent.removeMonitor(monitor)
-            globalEventMonitor = nil
-        }
-        if let monitor = localEventMonitor {
-            NSEvent.removeMonitor(monitor)
-            localEventMonitor = nil
-        }
-    }
+    // MARK: - Hotkey Action Callbacks (called by HotkeyService)
 
-    private func removeStopEventMonitors() {
-        if let monitor = stopGlobalEventMonitor {
-            NSEvent.removeMonitor(monitor)
-            stopGlobalEventMonitor = nil
-        }
-        if let monitor = stopLocalEventMonitor {
-            NSEvent.removeMonitor(monitor)
-            stopLocalEventMonitor = nil
-        }
-    }
-    
-    private func setupHotkey() {
-        let config = HotkeyConfig.load()
-        
-        if config.isModifierOnly {
-            // For modifier-only hotkeys, monitor flagsChanged events
-            globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-                self?.checkModifierHotkey(event: event, config: config)
-            }
-            localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-                if self?.checkModifierHotkey(event: event, config: config) == true {
-                    return nil
-                }
-                return event
-            }
-        } else {
-            // For regular keys, monitor keyDown events
-            globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                self?.checkHotkey(event: event, config: config)
-            }
-            localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                if self?.checkHotkey(event: event, config: config) == true {
-                    return nil
-                }
-                return event
-            }
-        }
-        
-        Logger.shared.log("Hotkey configured: \(config.displayString)")
-    }
-
-    private func setupStopHotkey() {
-        let config = StopHotkeyConfig.load()
-
-        // Stop hotkey only monitors keyDown (Escape and similar keys)
-        stopGlobalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.checkStopHotkey(event: event, config: config)
-        }
-        stopLocalEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if self?.checkStopHotkey(event: event, config: config) == true {
-                return nil
-            }
-            return event
-        }
-
-        Logger.shared.log("Stop hotkey configured: \(config.displayString)")
-    }
-
-    // MARK: - Modes Hotkey (Left Shift + Right Shift)
-
-    /// Sets up the global hotkey for opening Settings to the Modes tab.
-    /// Users can configure any key combination they want.
-    private func setupModesHotkey() {
-        let config = ModesHotkeyConfig.load()
-
-        guard config.isEnabled else {
-            Logger.shared.log("Modes hotkey: None configured")
-            return
-        }
-
-        let hasAccessibility = AXIsProcessTrusted()
-        if !hasAccessibility {
-            Logger.shared.log("Modes hotkey: Accessibility not granted, global monitor skipped", level: .warning)
-        }
-
-        if config.isTwoKeyCombo || config.isModifierOnly {
-            // For two-key combos and modifier-only hotkeys, monitor flagsChanged events
-            if hasAccessibility {
-                modesHotkeyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-                    self?.checkModesTwoKeyOrModifierHotkey(event: event, config: config)
-                }
-            }
-            modesHotkeyLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-                if self?.checkModesTwoKeyOrModifierHotkey(event: event, config: config) == true {
-                    return nil
-                }
-                return event
-            }
-        } else {
-            // For regular keys, monitor keyDown events
-            if hasAccessibility {
-                modesHotkeyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                    self?.checkModesHotkey(event: event, config: config)
-                }
-            }
-            modesHotkeyLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                if self?.checkModesHotkey(event: event, config: config) == true {
-                    return nil
-                }
-                return event
-            }
-        }
-
-        Logger.shared.log("Modes hotkey configured: \(config.displayString) (global: \(hasAccessibility))")
-    }
-
-    private func removeModesHotkeyMonitors() {
-        if let monitor = modesHotkeyGlobalMonitor {
-            NSEvent.removeMonitor(monitor)
-            modesHotkeyGlobalMonitor = nil
-        }
-        if let monitor = modesHotkeyLocalMonitor {
-            NSEvent.removeMonitor(monitor)
-            modesHotkeyLocalMonitor = nil
-        }
-        modesLastModifierState = []
-        modesFirstKeyDown = false
-        modesSecondKeyDown = false
-    }
-
-    @discardableResult
-    private func checkModesTwoKeyOrModifierHotkey(event: NSEvent, config: ModesHotkeyConfig) -> Bool {
-        let keyCode = event.keyCode
-        let currentFlags = event.modifierFlags
-
-        if config.isTwoKeyCombo {
-            // Two-key combo detection (e.g., Left⇧ + Right⇧)
-            // Track each key independently
-            if keyCode == config.keyCode {
-                modesFirstKeyDown = isModifierKeyDown(keyCode: keyCode, currentFlags: currentFlags)
-            } else if keyCode == config.secondKeyCode {
-                modesSecondKeyDown = isModifierKeyDown(keyCode: keyCode, currentFlags: currentFlags)
-            }
-
-            // Reset if the relevant modifier is fully released
-            let relevantModifier = getModifierFlag(for: config.keyCode)
-            if !currentFlags.contains(relevantModifier) {
-                modesFirstKeyDown = false
-                modesSecondKeyDown = false
-            }
-
-            // Trigger when both keys are held
-            if modesFirstKeyDown && modesSecondKeyDown {
-                modesFirstKeyDown = false
-                modesSecondKeyDown = false
-                handleModesHotkeyPressed(config: config)
-                return true
-            }
-        } else {
-            // Single modifier-only hotkey
-            guard keyCode == config.keyCode else {
-                modesLastModifierState = currentFlags
-                return false
-            }
-
-            let isKeyDown = isModifierKeyDown(keyCode: keyCode, currentFlags: currentFlags, lastFlags: modesLastModifierState)
-            modesLastModifierState = currentFlags
-
-            if isKeyDown {
-                handleModesHotkeyPressed(config: config)
-                return true
-            }
-        }
-
-        return false
-    }
-
-    private func isModifierKeyDown(keyCode: UInt16, currentFlags: NSEvent.ModifierFlags, lastFlags: NSEvent.ModifierFlags? = nil) -> Bool {
-        let last = lastFlags ?? modesLastModifierState
-        switch keyCode {
-        case UInt16(kVK_Shift), UInt16(kVK_RightShift):
-            return currentFlags.contains(.shift) && (lastFlags == nil || !last.contains(.shift))
-        case UInt16(kVK_Command), UInt16(kVK_RightCommand):
-            return currentFlags.contains(.command) && (lastFlags == nil || !last.contains(.command))
-        case UInt16(kVK_Option), UInt16(kVK_RightOption):
-            return currentFlags.contains(.option) && (lastFlags == nil || !last.contains(.option))
-        case UInt16(kVK_Control), UInt16(kVK_RightControl):
-            return currentFlags.contains(.control) && (lastFlags == nil || !last.contains(.control))
-        case UInt16(kVK_Function):
-            return currentFlags.contains(.function) && (lastFlags == nil || !last.contains(.function))
-        case UInt16(kVK_CapsLock):
-            return currentFlags.contains(.capsLock) && (lastFlags == nil || !last.contains(.capsLock))
-        default:
-            return false
-        }
-    }
-
-    private func getModifierFlag(for keyCode: UInt16) -> NSEvent.ModifierFlags {
-        switch keyCode {
-        case UInt16(kVK_Shift), UInt16(kVK_RightShift):
-            return .shift
-        case UInt16(kVK_Command), UInt16(kVK_RightCommand):
-            return .command
-        case UInt16(kVK_Option), UInt16(kVK_RightOption):
-            return .option
-        case UInt16(kVK_Control), UInt16(kVK_RightControl):
-            return .control
-        case UInt16(kVK_Function):
-            return .function
-        case UInt16(kVK_CapsLock):
-            return .capsLock
-        default:
-            return []
-        }
-    }
-
-    @discardableResult
-    private func checkModesHotkey(event: NSEvent, config: ModesHotkeyConfig) -> Bool {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-
-        // Check if key matches
-        guard event.keyCode == config.keyCode else { return false }
-
-        // Check modifiers
-        let hasCommand = modifiers.contains(.command)
-        let hasOption = modifiers.contains(.option)
-        let hasControl = modifiers.contains(.control)
-        let hasShift = modifiers.contains(.shift)
-
-        guard hasCommand == config.command,
-              hasOption == config.option,
-              hasControl == config.control,
-              hasShift == config.shift else {
-            return false
-        }
-
-        // Hotkey matched!
-        handleModesHotkeyPressed(config: config)
-        return true
-    }
-
-    private func handleModesHotkeyPressed(config: ModesHotkeyConfig) {
+    static func handleHotkeyAction() {
         Task { @MainActor in
-            let modeName = TranscriptionModeManager.shared.cycleToNextDictationMode()
-            Logger.shared.log("Modes hotkey pressed (\(config.displayString)) - cycled to mode: \(modeName)")
-            AppState.shared.overlayPanel?.show(state: .modeChanged, text: modeName)
+            let state = AppState.shared
 
-            // Cancel any pending hide from a previous press
-            modesOverlayHideWorkItem?.cancel()
-
-            let workItem = DispatchWorkItem { [weak self] in
-                guard self != nil else { return }
-                AppState.shared.overlayPanel?.hide()
+            // Don't interfere with Capture to Notes mode
+            if state.isCaptureMode {
+                Logger.shared.log("Hotkey pressed during Capture to Notes mode - ignoring")
+                return
             }
-            modesOverlayHideWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: workItem)
+
+            switch state.recordingState {
+            case .idle:
+                await state.startRecording()
+            case .recording:
+                await state.stopRecording()
+            case .processing:
+                Logger.shared.log("Hotkey pressed during processing - ignoring")
+            case .done, .error:
+                await state.startRecording()
+            }
         }
     }
 
-    @discardableResult
-    private func checkStopHotkey(event: NSEvent, config: StopHotkeyConfig) -> Bool {
-        // Only trigger if currently recording
-        guard AppState.shared.recordingState == .recording else { return false }
-
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-
-        // Check if key matches
-        guard event.keyCode == config.keyCode else { return false }
-
-        // Check modifiers
-        let hasCommand = modifiers.contains(.command)
-        let hasOption = modifiers.contains(.option)
-        let hasControl = modifiers.contains(.control)
-        let hasShift = modifiers.contains(.shift)
-
-        guard hasCommand == config.command,
-              hasOption == config.option,
-              hasControl == config.control,
-              hasShift == config.shift else {
-            return false
-        }
-
-        // Stop hotkey matched!
-        handleStopHotkeyPressed()
-        return true
-    }
-
-    private func handleStopHotkeyPressed() {
+    static func handleStopHotkeyAction() {
         Task { @MainActor in
             let state = AppState.shared
 
@@ -516,96 +213,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @discardableResult
-    private func checkModifierHotkey(event: NSEvent, config: HotkeyConfig) -> Bool {
-        let keyCode = event.keyCode
-        let currentFlags = event.modifierFlags
-        
-        // Check if this is the modifier key we're looking for being pressed (not released)
-        guard keyCode == config.keyCode else { return false }
-        
-        // Detect key down (modifier added) vs key up (modifier removed)
-        let isKeyDown: Bool
-        switch keyCode {
-        case UInt16(kVK_Shift), UInt16(kVK_RightShift):
-            isKeyDown = currentFlags.contains(.shift) && !lastModifierState.contains(.shift)
-        case UInt16(kVK_Command), UInt16(kVK_RightCommand):
-            isKeyDown = currentFlags.contains(.command) && !lastModifierState.contains(.command)
-        case UInt16(kVK_Option), UInt16(kVK_RightOption):
-            isKeyDown = currentFlags.contains(.option) && !lastModifierState.contains(.option)
-        case UInt16(kVK_Control), UInt16(kVK_RightControl):
-            isKeyDown = currentFlags.contains(.control) && !lastModifierState.contains(.control)
-        case UInt16(kVK_Function):
-            isKeyDown = currentFlags.contains(.function) && !lastModifierState.contains(.function)
-        case UInt16(kVK_CapsLock):
-            isKeyDown = currentFlags.contains(.capsLock) && !lastModifierState.contains(.capsLock)
-        default:
-            isKeyDown = false
-        }
-        
-        lastModifierState = currentFlags
-        
-        if isKeyDown {
-            handleHotkeyPressed()
-            return true
-        }
-        
-        return false
-    }
-    
-    @discardableResult
-    private func checkHotkey(event: NSEvent, config: HotkeyConfig) -> Bool {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        
-        // Check if key matches
-        guard event.keyCode == config.keyCode else { return false }
-        
-        // Check modifiers
-        let hasCommand = modifiers.contains(.command)
-        let hasOption = modifiers.contains(.option)
-        let hasControl = modifiers.contains(.control)
-        let hasShift = modifiers.contains(.shift)
-        
-        guard hasCommand == config.command,
-              hasOption == config.option,
-              hasControl == config.control,
-              hasShift == config.shift else {
-            return false
-        }
-        
-        // Hotkey matched!
-        handleHotkeyPressed()
-        return true
-    }
-    
-    private func handleHotkeyPressed() {
+    static func handleModesHotkeyAction() {
         Task { @MainActor in
-            let state = AppState.shared
+            let config = ModesHotkeyConfig.load()
+            let modeName = TranscriptionModeManager.shared.cycleToNextDictationMode()
+            Logger.shared.log("Modes hotkey pressed (\(config.displayString)) - cycled to mode: \(modeName)")
+            AppState.shared.overlayPanel?.show(state: .modeChanged, text: modeName)
 
-            // Don't interfere with Capture to Notes mode
-            if state.isCaptureMode {
-                Logger.shared.log("Hotkey pressed during Capture to Notes mode - ignoring")
-                return
-            }
+            // Cancel any pending hide from a previous press
+            modesOverlayHideWorkItem?.cancel()
 
-            switch state.recordingState {
-            case .idle:
-                await state.startRecording()
-            case .recording:
-                await state.stopRecording()
-            case .processing:
-                // Ignore during processing
-                Logger.shared.log("Hotkey pressed during processing - ignoring")
-            case .done, .error:
-                // Can start new recording
-                await state.startRecording()
+            let workItem = DispatchWorkItem {
+                AppState.shared.overlayPanel?.hide()
             }
+            modesOverlayHideWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: workItem)
         }
-    }
-    
-    private func setupOverlayPanel() {
-        overlayPanel = OverlayPanel()
-        AppState.shared.overlayPanel = overlayPanel
     }
 }
 
@@ -617,7 +240,7 @@ struct HotkeyConfig: Codable {
     var control: Bool
     var shift: Bool
     var isModifierOnly: Bool  // True if hotkey is just a modifier key (e.g., right shift)
-    
+
     static let defaultConfig = HotkeyConfig(
         keyCode: UInt16(kVK_F5),  // F5 key
         command: false,
@@ -626,7 +249,7 @@ struct HotkeyConfig: Codable {
         shift: false,
         isModifierOnly: false
     )
-    
+
     static func load() -> HotkeyConfig {
         if let data = UserDefaults.standard.data(forKey: "hotkeyConfig"),
            let config = try? JSONDecoder().decode(HotkeyConfig.self, from: data) {
@@ -634,19 +257,19 @@ struct HotkeyConfig: Codable {
         }
         return defaultConfig
     }
-    
+
     func save() {
         if let data = try? JSONEncoder().encode(self) {
             UserDefaults.standard.set(data, forKey: "hotkeyConfig")
             NotificationCenter.default.post(name: .hotkeyDidChange, object: nil)
         }
     }
-    
+
     var displayString: String {
         if isModifierOnly {
             return modifierKeyName
         }
-        
+
         var parts: [String] = []
         if control { parts.append("⌃") }
         if option { parts.append("⌥") }
@@ -655,7 +278,7 @@ struct HotkeyConfig: Codable {
         parts.append(keyName)
         return parts.joined()
     }
-    
+
     private var modifierKeyName: String {
         switch keyCode {
         case UInt16(kVK_RightShift): return "Right ⇧"
@@ -671,7 +294,7 @@ struct HotkeyConfig: Codable {
         default: return "Modifier"
         }
     }
-    
+
     var keyName: String {
         let keyNames: [UInt16: String] = [
             UInt16(kVK_F1): "F1", UInt16(kVK_F2): "F2", UInt16(kVK_F3): "F3",
@@ -723,22 +346,19 @@ extension Notification.Name {
     static let hotkeyDidChange = Notification.Name("hotkeyDidChange")
     /// Posted when the stop hotkey configuration changes.
     static let stopHotkeyDidChange = Notification.Name("stopHotkeyDidChange")
-    /// Posted when the modes hotkey (Left⇧ + Right⇧) configuration changes.
+    /// Posted when the modes hotkey configuration changes.
     static let modesHotkeyDidChange = Notification.Name("modesHotkeyDidChange")
 
     // MARK: Settings Notifications
     /// Posted to request opening the Settings window.
-    /// Handled by `AppDelegate.openSettingsWindow()`.
-    /// - SeeAlso: `SettingsCoordinator.requestOpenSettings(tab:)`
     static let openSettingsRequested = Notification.Name("openSettingsRequested")
     /// Posted to request switching to a specific Settings tab.
     /// UserInfo contains "tab" key with `SettingsTab` value.
-    /// - SeeAlso: `SettingsTabCoordinator.requestTab(_:)`
     static let settingsTabRequested = Notification.Name("settingsTabRequested")
 }
 
 // MARK: - Modes Hotkey Configuration
-/// Configuration for the hotkey that opens Settings to the Modes tab.
+/// Configuration for the hotkey that cycles dictation modes.
 /// Supports single keys, key+modifiers, modifier-only, or two-key combinations.
 struct ModesHotkeyConfig: Codable {
     var keyCode: UInt16

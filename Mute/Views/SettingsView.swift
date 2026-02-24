@@ -5,6 +5,8 @@ import SwiftUI
 import AppKit
 import AVFoundation
 import Carbon.HIToolbox
+import KeyboardShortcuts
+import ServiceManagement
 
 // MARK: - Settings Tab Enum
 /// Represents the available tabs in the Settings window.
@@ -284,12 +286,46 @@ struct GeneralSettingsTab: View {
                         }
                     }
                 }
+
+                // Startup Section
+                VStack(alignment: .leading, spacing: 10) {
+                    SettingsSectionHeader(title: "Startup", icon: "power")
+
+                    SettingsCard {
+                        LaunchAtLoginToggle()
+                    }
+                }
             }
             .padding(20)
         }
         .onAppear {
             // Refresh device list when view appears (backup for listener)
             deviceMonitor.refreshDevices()
+        }
+    }
+}
+
+// MARK: - Launch at Login Toggle
+struct LaunchAtLoginToggle: View {
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+
+    var body: some View {
+        SettingsToggleRow(
+            title: "Launch at Login",
+            description: "Start Mute automatically so hotkeys are always available",
+            isOn: $launchAtLogin
+        )
+        .onChange(of: launchAtLogin) { newValue in
+            do {
+                if newValue {
+                    try SMAppService.mainApp.register()
+                } else {
+                    try SMAppService.mainApp.unregister()
+                }
+            } catch {
+                Logger.shared.log("Launch at login failed: \(error)", level: .error)
+                launchAtLogin = SMAppService.mainApp.status == .enabled
+            }
         }
     }
 }
@@ -317,27 +353,69 @@ struct SettingsToggleRow: View {
     }
 }
 
-// MARK: - Custom Hotkey Button
+// MARK: - Toggle Recording Hotkey Button
+/// Dual-mode hotkey recorder: uses KeyboardShortcuts.Recorder for standard combos,
+/// falls back to custom NSEvent recording for modifier-only shortcuts.
 struct HotkeyButton: View {
+    @State private var useAdvancedMode: Bool = HotkeyConfig.load().isModifierOnly
+    @State private var hotkeyConfig = HotkeyConfig.load()
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            if useAdvancedMode {
+                AdvancedHotkeyRecorder()
+            } else {
+                KeyboardShortcuts.Recorder(for: .toggleRecording) { shortcut in
+                    // Sync back to HotkeyConfig so displayString/logging still works
+                    if let shortcut {
+                        let newConfig = HotkeyConfig(
+                            keyCode: UInt16(shortcut.carbonKeyCode),
+                            command: shortcut.modifiers.contains(.command),
+                            option: shortcut.modifiers.contains(.option),
+                            control: shortcut.modifiers.contains(.control),
+                            shift: shortcut.modifiers.contains(.shift),
+                            isModifierOnly: false
+                        )
+                        if let data = try? JSONEncoder().encode(newConfig) {
+                            UserDefaults.standard.set(data, forKey: "hotkeyConfig")
+                        }
+                    }
+                }
+            }
+
+            Button(useAdvancedMode ? "Use standard shortcut" : "Use modifier-only key") {
+                useAdvancedMode.toggle()
+                if !useAdvancedMode {
+                    // Switching to standard mode: re-sync current config
+                    let config = HotkeyConfig.load()
+                    if !config.isModifierOnly {
+                        HotkeyService.shared.reconfigureToggleRecording()
+                    }
+                }
+            }
+            .font(.system(size: 10))
+            .foregroundColor(.secondary)
+            .buttonStyle(.plain)
+        }
+    }
+}
+
+/// Custom recorder for modifier-only toggle recording hotkeys (Right Shift, etc.)
+private struct AdvancedHotkeyRecorder: View {
     @State private var isRecording = false
     @State private var hotkeyConfig = HotkeyConfig.load()
-    @State private var keyDownMonitor: Any?
     @State private var flagsMonitor: Any?
     @State private var lastFlags: NSEvent.ModifierFlags = []
 
     var body: some View {
         Button(action: {
-            if isRecording {
-                stopRecording()
-            } else {
-                startRecording()
-            }
+            if isRecording { stopRecording() } else { startRecording() }
         }) {
             HStack(spacing: 8) {
                 if isRecording {
                     Image(systemName: "keyboard")
                         .foregroundColor(.white)
-                    Text("Press any key...")
+                    Text("Press modifier key...")
                         .foregroundColor(.white)
                 } else {
                     Text(hotkeyConfig.displayString)
@@ -363,42 +441,6 @@ struct HotkeyButton: View {
     private func startRecording() {
         isRecording = true
         lastFlags = NSEvent.modifierFlags
-
-        keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let keyCode = event.keyCode
-
-            if keyCode == UInt16(kVK_Escape) {
-                self.stopRecording()
-                return nil
-            }
-
-            let modifierKeyCodes: Set<UInt16> = [
-                UInt16(kVK_Shift), UInt16(kVK_RightShift),
-                UInt16(kVK_Command), UInt16(kVK_RightCommand),
-                UInt16(kVK_Option), UInt16(kVK_RightOption),
-                UInt16(kVK_Control), UInt16(kVK_RightControl),
-                UInt16(kVK_Function), UInt16(kVK_CapsLock)
-            ]
-            if modifierKeyCodes.contains(keyCode) {
-                return event
-            }
-
-            let newConfig = HotkeyConfig(
-                keyCode: keyCode,
-                command: modifiers.contains(.command),
-                option: modifiers.contains(.option),
-                control: modifiers.contains(.control),
-                shift: modifiers.contains(.shift),
-                isModifierOnly: false
-            )
-
-            newConfig.save()
-            self.hotkeyConfig = newConfig
-            self.stopRecording()
-
-            return nil
-        }
 
         flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
             let keyCode = event.keyCode
@@ -434,7 +476,6 @@ struct HotkeyButton: View {
                     shift: false,
                     isModifierOnly: true
                 )
-
                 newConfig.save()
                 self.hotkeyConfig = newConfig
                 self.stopRecording()
@@ -447,10 +488,6 @@ struct HotkeyButton: View {
 
     private func stopRecording() {
         isRecording = false
-        if let monitor = keyDownMonitor {
-            NSEvent.removeMonitor(monitor)
-            keyDownMonitor = nil
-        }
         if let monitor = flagsMonitor {
             NSEvent.removeMonitor(monitor)
             flagsMonitor = nil
@@ -459,101 +496,38 @@ struct HotkeyButton: View {
 }
 
 // MARK: - Stop Hotkey Button
+/// Uses KeyboardShortcuts.Recorder — stop hotkey is always a standard key combo.
 struct StopHotkeyButton: View {
-    @State private var isRecording = false
-    @State private var hotkeyConfig = StopHotkeyConfig.load()
-    @State private var keyDownMonitor: Any?
-
     var body: some View {
-        Button(action: {
-            if isRecording {
-                stopRecording()
-            } else {
-                startRecording()
-            }
-        }) {
-            HStack(spacing: 8) {
-                if isRecording {
-                    Image(systemName: "keyboard")
-                        .foregroundColor(.white)
-                    Text("Press any key...")
-                        .foregroundColor(.white)
-                } else {
-                    Text(hotkeyConfig.displayString)
-                        .fontWeight(.medium)
-                        .font(.system(size: 13, design: .rounded))
+        KeyboardShortcuts.Recorder(for: .cancelRecording) { shortcut in
+            // Sync back to StopHotkeyConfig for display/logging
+            if let shortcut {
+                let config = StopHotkeyConfig(
+                    keyCode: UInt16(shortcut.carbonKeyCode),
+                    command: shortcut.modifiers.contains(.command),
+                    option: shortcut.modifiers.contains(.option),
+                    control: shortcut.modifiers.contains(.control),
+                    shift: shortcut.modifiers.contains(.shift)
+                )
+                if let data = try? JSONEncoder().encode(config) {
+                    UserDefaults.standard.set(data, forKey: "stopHotkeyConfig")
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .frame(minWidth: 120)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isRecording ? Color.accentColor : Color(NSColor.controlBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(isRecording ? Color.accentColor : Color.gray.opacity(0.3), lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func startRecording() {
-        isRecording = true
-
-        keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let keyCode = event.keyCode
-
-            // Cancel recording with a second Escape press if Escape is being set
-            if keyCode == UInt16(kVK_Escape) && !modifiers.isEmpty {
-                // Allow Escape with modifiers to be set
-            } else if keyCode == UInt16(kVK_Escape) {
-                // First Escape sets it, second cancels
-                let config = StopHotkeyConfig(
-                    keyCode: keyCode,
-                    command: false,
-                    option: false,
-                    control: false,
-                    shift: false
-                )
-                config.save()
-                self.hotkeyConfig = config
-                self.stopRecording()
-                return nil
-            }
-
-            let config = StopHotkeyConfig(
-                keyCode: keyCode,
-                command: modifiers.contains(.command),
-                option: modifiers.contains(.option),
-                control: modifiers.contains(.control),
-                shift: modifiers.contains(.shift)
-            )
-
-            config.save()
-            self.hotkeyConfig = config
-            self.stopRecording()
-
-            return nil
-        }
-    }
-
-    private func stopRecording() {
-        isRecording = false
-        if let monitor = keyDownMonitor {
-            NSEvent.removeMonitor(monitor)
-            keyDownMonitor = nil
         }
     }
 }
 
 // MARK: - Modes Hotkey Row
+/// Dual-mode: KeyboardShortcuts.Recorder for standard combos,
+/// custom recorder (advanced toggle) for modifier-only / two-key combos.
 struct ModesHotkeyRow: View {
     @State private var hasAccessibility = AXIsProcessTrusted()
     @State private var hotkeyConfig = ModesHotkeyConfig.load()
     @State private var accessibilityPollTimer: Timer?
+    @State private var useAdvancedMode: Bool = {
+        let cfg = ModesHotkeyConfig.load()
+        return cfg.isModifierOnly || cfg.isTwoKeyCombo
+    }()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -567,15 +541,51 @@ struct ModesHotkeyRow: View {
                 }
                 Spacer()
 
-                ModesHotkeyButton()
+                VStack(alignment: .trailing, spacing: 6) {
+                    if useAdvancedMode {
+                        ModesHotkeyButton()
+                    } else {
+                        KeyboardShortcuts.Recorder(for: .cycleDictationMode) { shortcut in
+                            // Sync back to ModesHotkeyConfig
+                            if let shortcut {
+                                let newConfig = ModesHotkeyConfig(
+                                    keyCode: UInt16(shortcut.carbonKeyCode),
+                                    secondKeyCode: 0,
+                                    command: shortcut.modifiers.contains(.command),
+                                    option: shortcut.modifiers.contains(.option),
+                                    control: shortcut.modifiers.contains(.control),
+                                    shift: shortcut.modifiers.contains(.shift),
+                                    isModifierOnly: false,
+                                    isTwoKeyCombo: false
+                                )
+                                if let data = try? JSONEncoder().encode(newConfig) {
+                                    UserDefaults.standard.set(data, forKey: "modesHotkeyConfig")
+                                }
+                                hotkeyConfig = newConfig
+                            } else {
+                                // Shortcut cleared
+                                ModesHotkeyConfig.clear()
+                                hotkeyConfig = ModesHotkeyConfig.load()
+                            }
+                        }
+                    }
+
+                    Button(useAdvancedMode ? "Use standard shortcut" : "Use modifier-only / two-key combo") {
+                        useAdvancedMode.toggle()
+                    }
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .buttonStyle(.plain)
+                }
             }
 
-            if hotkeyConfig.isEnabled && !hasAccessibility {
+            // Accessibility warning: only shown when in NSEvent fallback mode
+            if useAdvancedMode && hotkeyConfig.isEnabled && !hasAccessibility {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(.orange)
                         .font(.system(size: 12))
-                    Text("Accessibility permission required for global shortcut")
+                    Text("Accessibility permission required for this shortcut type")
                         .font(.system(size: 11))
                         .foregroundColor(.orange)
                     Spacer()
@@ -604,11 +614,9 @@ struct ModesHotkeyRow: View {
     }
 
     private func requestAccessibilityAndPoll() {
-        // Prompt the system accessibility dialog
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         AXIsProcessTrustedWithOptions(options)
 
-        // Poll for the permission change
         accessibilityPollTimer?.invalidate()
         accessibilityPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
             if AXIsProcessTrusted() {

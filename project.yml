@@ -1,8 +1,8 @@
-# TinyDictate Xcode Project Configuration
+# Mute Xcode Project Configuration
 # Generate with: xcodegen generate
 # Install XcodeGen: brew install xcodegen
 
-name: TinyDictate
+name: Mute
 options:
   bundleIdPrefix: com.tinydictate
   deploymentTarget:
@@ -14,14 +14,14 @@ options:
 
 settings:
   base:
-    PRODUCT_NAME: TinyDictate
+    PRODUCT_NAME: Mute
     PRODUCT_BUNDLE_IDENTIFIER: com.tinydictate.app
     MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.9"
     MACOSX_DEPLOYMENT_TARGET: "13.0"
-    INFOPLIST_FILE: TinyDictate/Info.plist
-    CODE_SIGN_ENTITLEMENTS: TinyDictate/TinyDictate.entitlements
+    INFOPLIST_FILE: Mute/Info.plist
+    CODE_SIGN_ENTITLEMENTS: Mute/Mute.entitlements
     ENABLE_HARDENED_RUNTIME: YES
     COMBINE_HIDPI_IMAGES: YES
     ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -44,29 +44,36 @@ settings:
       COPY_PHASE_STRIP: YES
       ENABLE_NS_ASSERTIONS: NO
 
+packages:
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts.git
+    from: "2.0.0"
+
 targets:
-  TinyDictate:
+  Mute:
     type: application
     platform: macOS
     sources:
-      - path: TinyDictate
+      - path: Mute
         excludes:
           - "**/*.entitlements"
           - "**/Info.plist"
+    dependencies:
+      - package: KeyboardShortcuts
     settings:
       base:
-        PRODUCT_NAME: TinyDictate
+        PRODUCT_NAME: Mute
         PRODUCT_BUNDLE_IDENTIFIER: com.tinydictate.app
-        INFOPLIST_FILE: TinyDictate/Info.plist
-        CODE_SIGN_ENTITLEMENTS: TinyDictate/TinyDictate.entitlements
-        LD_RUNPATH_SEARCH_PATHS: 
+        INFOPLIST_FILE: Mute/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Mute/Mute.entitlements
+        LD_RUNPATH_SEARCH_PATHS:
           - "@executable_path/../Frameworks"
 
 schemes:
-  TinyDictate:
+  Mute:
     build:
       targets:
-        TinyDictate: all
+        Mute: all
     run:
       config: Debug
       commandLineArguments:

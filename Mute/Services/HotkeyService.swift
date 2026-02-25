@@ -30,8 +30,9 @@ final class HotkeyService {
     private var localEventMonitor: Any?
     private var lastModifierState: NSEvent.ModifierFlags = []
 
-    private var stopGlobalEventMonitor: Any?
-    private var stopLocalEventMonitor: Any?
+    // Double-tap ESC detection state
+    private var lastStopEscPressTime: CFAbsoluteTime = 0
+    private static let doubleTapInterval: CFAbsoluteTime = 0.4
     private var stopKeyDownGlobalMonitor: Any?
     private var stopKeyDownLocalMonitor: Any?
 
@@ -149,16 +150,24 @@ final class HotkeyService {
 
     private func setupStopHotkey() {
         let config = StopHotkeyConfig.load()
-
         let isBareEscape = config.keyCode == UInt16(kVK_Escape)
             && !config.command && !config.option && !config.control && !config.shift
 
-        if isBareEscape {
-            // Bare Escape can't be registered via Carbon/KeyboardShortcuts — use NSEvent monitors
+        if isBareEscape && AXIsProcessTrusted() {
+            // Accessibility granted: use NSEvent monitors (ESC passes through to other apps)
             stopHotkeyUsesNSEvent = true
-            setupStopNSEventMonitors(config: config)
+            setupStopNSEventMonitors()
+        } else if isBareEscape {
+            // No accessibility: fall back to Carbon (ESC consumed but stop hotkey works)
+            stopHotkeyUsesNSEvent = false
+            syncStopHotkeyConfigToKeyboardShortcuts(config)
+            KeyboardShortcuts.onKeyDown(for: .cancelRecording) {
+                Task { @MainActor in
+                    HotkeyService.shared.handleStopEscPress()
+                }
+            }
         } else {
-            // Standard combo: use Carbon via KeyboardShortcuts
+            // Non-bare key combo: always use Carbon
             stopHotkeyUsesNSEvent = false
             syncStopHotkeyConfigToKeyboardShortcuts(config)
             KeyboardShortcuts.onKeyDown(for: .cancelRecording) {
@@ -168,46 +177,40 @@ final class HotkeyService {
             }
         }
 
-        Logger.shared.log("Stop hotkey configured: \(config.displayString) (Carbon: \(!stopHotkeyUsesNSEvent))")
+        let method = isBareEscape ? (stopHotkeyUsesNSEvent ? "NSEvent" : "Carbon-fallback") : "Carbon"
+        Logger.shared.log("Stop hotkey configured: \(config.displayString) (\(method))")
     }
 
-    private func setupStopNSEventMonitors(config: StopHotkeyConfig) {
+    /// Double-tap detection for bare-ESC stop hotkey.
+    func handleStopEscPress() {
+        let now = CFAbsoluteTimeGetCurrent()
+        let elapsed = now - lastStopEscPressTime
+
+        if elapsed < Self.doubleTapInterval {
+            // Second tap within window — fire stop action
+            lastStopEscPressTime = 0
+            AppDelegate.handleStopHotkeyAction()
+        } else {
+            // First tap — record time
+            lastStopEscPressTime = now
+        }
+    }
+
+    private func setupStopNSEventMonitors() {
         stopKeyDownGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.checkStopKeyDown(event: event, config: config)
+            if event.keyCode == UInt16(kVK_Escape) {
+                self?.handleStopEscPress()
+            }
         }
         stopKeyDownLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if self?.checkStopKeyDown(event: event, config: config) == true {
-                return nil
+            if event.keyCode == UInt16(kVK_Escape) {
+                self?.handleStopEscPress()
             }
-            return event
+            return event  // Always pass through
         }
-    }
-
-    @discardableResult
-    private func checkStopKeyDown(event: NSEvent, config: StopHotkeyConfig) -> Bool {
-        guard event.keyCode == config.keyCode else { return false }
-        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let wantCommand = config.command, wantOption = config.option
-        let wantControl = config.control, wantShift = config.shift
-        let hasCommand = mods.contains(.command), hasOption = mods.contains(.option)
-        let hasControl = mods.contains(.control), hasShift = mods.contains(.shift)
-        if wantCommand == hasCommand && wantOption == hasOption
-            && wantControl == hasControl && wantShift == hasShift {
-            AppDelegate.handleStopHotkeyAction()
-            return true
-        }
-        return false
     }
 
     private func removeStopMonitors() {
-        if let monitor = stopGlobalEventMonitor {
-            NSEvent.removeMonitor(monitor)
-            stopGlobalEventMonitor = nil
-        }
-        if let monitor = stopLocalEventMonitor {
-            NSEvent.removeMonitor(monitor)
-            stopLocalEventMonitor = nil
-        }
         if let monitor = stopKeyDownGlobalMonitor {
             NSEvent.removeMonitor(monitor)
             stopKeyDownGlobalMonitor = nil
@@ -215,6 +218,24 @@ final class HotkeyService {
         if let monitor = stopKeyDownLocalMonitor {
             NSEvent.removeMonitor(monitor)
             stopKeyDownLocalMonitor = nil
+        }
+        lastStopEscPressTime = 0
+    }
+
+    /// Re-setup stop hotkey when accessibility is granted after initial setup.
+    /// Handles both: upgrading from Carbon fallback to NSEvent, and re-creating a missing global monitor.
+    func reSetupStopIfNeeded() {
+        let config = StopHotkeyConfig.load()
+        let isBareEscape = config.keyCode == UInt16(kVK_Escape)
+            && !config.command && !config.option && !config.control && !config.shift
+
+        // Upgrade: accessibility just became available, switch from Carbon fallback to NSEvent
+        if AXIsProcessTrusted() && isBareEscape && !stopHotkeyUsesNSEvent {
+            reconfigureStopHotkey()
+        }
+        // Or: NSEvent path active but global monitor missing
+        if AXIsProcessTrusted() && stopHotkeyUsesNSEvent && stopKeyDownGlobalMonitor == nil {
+            reconfigureStopHotkey()
         }
     }
 

@@ -125,7 +125,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Also handle when app is activated (clicked in Dock)
     func applicationDidBecomeActive(_ notification: Notification) {
-        // Re-setup modes hotkey global monitor if accessibility was granted after initial setup
+        // Re-setup global monitors if accessibility was granted after initial setup
+        HotkeyService.shared.reSetupStopIfNeeded()
         HotkeyService.shared.reSetupModesIfNeeded()
 
         let visibleWindows = NSApp.windows.filter {
@@ -206,8 +207,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            if state.recordingState == .recording {
-                Logger.shared.log("Stop hotkey pressed - cancelling recording")
+            if state.recordingState == .recording || state.recordingState == .processing {
+                Logger.shared.log("Stop hotkey pressed - cancelling recording (state: \(state.recordingState))")
                 state.cancelRecording()
             }
         }
@@ -514,6 +515,12 @@ struct StopHotkeyConfig: Codable {
     }
 
     var displayString: String {
+        let isBareEscape = keyCode == UInt16(kVK_Escape)
+            && !command && !option && !control && !shift
+        if isBareEscape {
+            return "Esc ×2"
+        }
+
         var parts: [String] = []
         if control { parts.append("⌃") }
         if option { parts.append("⌥") }

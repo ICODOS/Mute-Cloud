@@ -183,17 +183,7 @@ struct GeneralSettingsTab: View {
 
                             Divider()
 
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Cancel Recording")
-                                        .font(.system(size: 13, weight: .medium))
-                                    Text("Press to cancel without transcription")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.secondary)
-                                }
-                                Spacer()
-                                StopHotkeyButton()
-                            }
+                            StopHotkeyRow()
 
                             Divider()
 
@@ -568,6 +558,84 @@ struct StopHotkeyButton: View {
         if let monitor = keyDownMonitor {
             NSEvent.removeMonitor(monitor)
             keyDownMonitor = nil
+        }
+    }
+}
+
+// MARK: - Stop Hotkey Row
+/// Shows the Cancel Recording hotkey with an accessibility warning when bare ESC is configured
+/// without accessibility permission (Carbon fallback consumes ESC in other apps).
+struct StopHotkeyRow: View {
+    @State private var hasAccessibility = AXIsProcessTrusted()
+    @State private var hotkeyConfig = StopHotkeyConfig.load()
+    @State private var accessibilityPollTimer: Timer?
+
+    private var isBareEscape: Bool {
+        hotkeyConfig.keyCode == UInt16(kVK_Escape)
+            && !hotkeyConfig.command && !hotkeyConfig.option && !hotkeyConfig.control && !hotkeyConfig.shift
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Cancel Recording")
+                        .font(.system(size: 13, weight: .medium))
+                    Text("Double-press to cancel without transcription")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                StopHotkeyButton()
+            }
+
+            // Accessibility warning: shown when bare ESC without accessibility (Carbon fallback)
+            if isBareEscape && !hasAccessibility {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                        .font(.system(size: 12))
+                    Text("Grant Accessibility to let Esc work normally in other apps")
+                        .font(.system(size: 11))
+                        .foregroundColor(.orange)
+                    Spacer()
+                    Button("Grant Access") {
+                        requestAccessibilityAndPoll()
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.orange.opacity(0.1))
+                )
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .stopHotkeyDidChange)) { _ in
+            hotkeyConfig = StopHotkeyConfig.load()
+            hasAccessibility = AXIsProcessTrusted()
+        }
+        .onDisappear {
+            accessibilityPollTimer?.invalidate()
+            accessibilityPollTimer = nil
+        }
+    }
+
+    private func requestAccessibilityAndPoll() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        AXIsProcessTrustedWithOptions(options)
+
+        accessibilityPollTimer?.invalidate()
+        accessibilityPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
+            if AXIsProcessTrusted() {
+                timer.invalidate()
+                accessibilityPollTimer = nil
+                hasAccessibility = true
+                // Trigger reconfiguration: upgrades from Carbon fallback to NSEvent
+                NotificationCenter.default.post(name: .stopHotkeyDidChange, object: nil)
+            }
         }
     }
 }

@@ -51,12 +51,87 @@ final class GroqWhisperProvider: TranscriptionProvider {
         return .valid
     }
 
+    // MARK: - Verbose Transcription (for continuous mode)
+
+    /// Transcribes audio and returns word-level timestamps via verbose_json format
+    func transcribeVerbose(audioFileURL: URL, language: String?, prompt: String?) async throws -> GroqVerboseTranscription {
+        let validation = validateConfiguration()
+        if case .invalid(_) = validation {
+            throw TranscriptionError.missingAPIKey
+        }
+
+        guard let apiKey = KeychainManager.shared.getGroqAPIKey() else {
+            throw TranscriptionError.missingAPIKey
+        }
+
+        let audioData: Data
+        do {
+            audioData = try Data(contentsOf: audioFileURL)
+        } catch {
+            Logger.shared.log("GroqWhisperProvider: Failed to load audio file: \(error)", level: .error)
+            throw TranscriptionError.networkError(underlying: error)
+        }
+
+        let fileSizeMB = Double(audioData.count) / (1024 * 1024)
+        if fileSizeMB > maxFileSizeMB {
+            throw TranscriptionError.audioFileTooLarge(sizeMB: fileSizeMB, maxMB: maxFileSizeMB)
+        }
+
+        Logger.shared.log(String(format: "GroqWhisperProvider: Uploading audio file for verbose transcription (%.2f MB)", fileSizeMB))
+
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: apiEndpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = requestTimeout
+
+        let body = buildMultipartBody(
+            audioData: audioData,
+            fileName: audioFileURL.lastPathComponent,
+            language: language,
+            prompt: prompt,
+            boundary: boundary,
+            responseFormat: "verbose_json",
+            timestampGranularities: ["word"]
+        )
+        request.httpBody = body
+
+        var lastError: Error?
+        for attempt in 0...maxRetries {
+            if attempt > 0 {
+                Logger.shared.log("GroqWhisperProvider: Verbose retry attempt \(attempt)/\(maxRetries)")
+                try await Task.sleep(nanoseconds: UInt64(retryDelay * 1_000_000_000))
+            }
+
+            do {
+                let result = try await executeRequestVerbose(request)
+                Logger.shared.log("GroqWhisperProvider: Verbose transcription successful (\(result.words?.count ?? 0) words)")
+                return result
+            } catch let error as TranscriptionError {
+                lastError = error
+                switch error {
+                case .invalidAPIKey, .missingAPIKey, .audioFileTooLarge, .unsupportedAudioFormat, .cancelled:
+                    throw error
+                case .serverError(let statusCode, _) where statusCode >= 400 && statusCode < 500 && statusCode != 429:
+                    throw error
+                default:
+                    continue
+                }
+            } catch {
+                lastError = error
+            }
+        }
+
+        throw lastError ?? TranscriptionError.unknown(message: "Verbose request failed after \(maxRetries) retries")
+    }
+
     // MARK: - Transcription
 
     func transcribe(audioFileURL: URL, language: String?, prompt: String?) async throws -> String {
         // Validate configuration
         let validation = validateConfiguration()
-        if case .invalid(let reason) = validation {
+        if case .invalid(_) = validation {
             throw TranscriptionError.missingAPIKey
         }
 
@@ -169,7 +244,9 @@ final class GroqWhisperProvider: TranscriptionProvider {
         fileName: String,
         language: String?,
         prompt: String?,
-        boundary: String
+        boundary: String,
+        responseFormat: String = "text",
+        timestampGranularities: [String]? = nil
     ) -> Data {
         var body = Data()
 
@@ -190,10 +267,19 @@ final class GroqWhisperProvider: TranscriptionProvider {
         append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
         append("\(modelName)\r\n")
 
-        // Response format (text for simplest integration)
+        // Response format
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
-        append("text\r\n")
+        append("\(responseFormat)\r\n")
+
+        // Timestamp granularities (for verbose_json)
+        if let granularities = timestampGranularities {
+            for granularity in granularities {
+                append("--\(boundary)\r\n")
+                append("Content-Disposition: form-data; name=\"timestamp_granularities[]\"\r\n\r\n")
+                append("\(granularity)\r\n")
+            }
+        }
 
         // Temperature (0 for deterministic output)
         append("--\(boundary)\r\n")
@@ -271,6 +357,55 @@ final class GroqWhisperProvider: TranscriptionProvider {
         default:
             let message = extractErrorMessage(from: data) ?? "Unknown error"
             // Log the error but don't log the full response (might contain sensitive info)
+            Logger.shared.log("GroqWhisperProvider: Server error \(httpResponse.statusCode): \(message)", level: .error)
+            throw TranscriptionError.serverError(statusCode: httpResponse.statusCode, message: message)
+        }
+    }
+
+    private func executeRequestVerbose(_ request: URLRequest) async throws -> GroqVerboseTranscription {
+        let (data, response): (Data, URLResponse)
+
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch let error as URLError {
+            switch error.code {
+            case .cancelled:
+                throw TranscriptionError.cancelled
+            case .timedOut:
+                throw TranscriptionError.timeout
+            case .notConnectedToInternet, .networkConnectionLost:
+                throw TranscriptionError.networkError(underlying: error)
+            default:
+                throw TranscriptionError.networkError(underlying: error)
+            }
+        } catch {
+            throw TranscriptionError.networkError(underlying: error)
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw TranscriptionError.invalidResponse
+        }
+
+        switch httpResponse.statusCode {
+        case 200:
+            do {
+                return try JSONDecoder().decode(GroqVerboseTranscription.self, from: data)
+            } catch {
+                Logger.shared.log("GroqWhisperProvider: Failed to decode verbose JSON: \(error)", level: .error)
+                throw TranscriptionError.invalidResponse
+            }
+
+        case 401:
+            throw TranscriptionError.invalidAPIKey
+        case 413:
+            throw TranscriptionError.audioFileTooLarge(sizeMB: 0, maxMB: maxFileSizeMB)
+        case 415:
+            throw TranscriptionError.unsupportedAudioFormat
+        case 429:
+            let message = extractErrorMessage(from: data) ?? "Rate limit exceeded. Please try again later."
+            throw TranscriptionError.serverError(statusCode: 429, message: message)
+        default:
+            let message = extractErrorMessage(from: data) ?? "Unknown error"
             Logger.shared.log("GroqWhisperProvider: Server error \(httpResponse.statusCode): \(message)", level: .error)
             throw TranscriptionError.serverError(statusCode: httpResponse.statusCode, message: message)
         }

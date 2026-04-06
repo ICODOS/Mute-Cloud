@@ -111,6 +111,9 @@ class AppState: ObservableObject {
     private var cloudTranscriptionTask: Task<Void, Never>?
     private var fileTranscriptionTask: Task<Void, Never>?
 
+    // MARK: - Continuous Transcription
+    private var continuousSession: ContinuousTranscriptionSession?
+
     // MARK: - Transcription Modes
     let modeManager = TranscriptionModeManager.shared
 
@@ -447,8 +450,16 @@ class AppState: ObservableObject {
         cloudTranscriptionTask = nil
         cloudAudioFileManager = nil
 
+        // Cancel continuous transcription session if active
+        continuousSession?.cancel()
+        continuousSession = nil
+
         // Stop audio capture without processing
         audioManager.stopCapture()
+
+        // Reset capture mode state
+        isCaptureMode = false
+        captureNoteId = nil
 
         // Reset state
         recordingState = .idle
@@ -476,9 +487,9 @@ class AppState: ObservableObject {
         // State cleanup is handled by the error handling in the task itself
     }
 
-    // MARK: - Capture Mode Control
+    // MARK: - Capture Mode Control (Continuous Transcription)
     func startCaptureMode() async {
-        Logger.shared.log("=== STARTING CAPTURE MODE ===")
+        Logger.shared.log("=== STARTING CAPTURE MODE (CONTINUOUS) ===")
 
         // Validate Groq configuration
         let validation = groqProvider.validateConfiguration()
@@ -498,6 +509,17 @@ class AppState: ObservableObject {
             return
         }
 
+        // Check permissions
+        let hasMicPermission = await permissionManager.hasMicrophonePermission()
+        if !hasMicPermission {
+            let granted = await permissionManager.requestMicrophonePermission()
+            if !granted {
+                errorMessage = "Microphone permission is required"
+                recordingState = .error("No microphone permission")
+                return
+            }
+        }
+
         // Create a new note for this capture session
         do {
             let title = "Mute Capture - \(DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short))"
@@ -505,8 +527,63 @@ class AppState: ObservableObject {
             Logger.shared.log("Created note with ID: \(captureNoteId ?? "nil")")
             isCaptureMode = true
 
-            // Start recording
-            await startRecording()
+            // Create continuous transcription session
+            let session = ContinuousTranscriptionSession()
+            continuousSession = session
+
+            // Set up callback to append new transcript text to Notes
+            let noteId = captureNoteId!
+            let notesService = notesIntegrationService
+            session.onNewTranscript = { [weak self] newText in
+                guard let self = self, self.isCaptureMode else { return }
+                Task {
+                    do {
+                        // Convert timestamped text to HTML for Notes
+                        let htmlText = Self.transcriptToHTML(newText)
+                        try await notesService.appendToNote(noteId: noteId, text: htmlText, isHTML: true)
+                        Logger.shared.log("CaptureMode: Appended new transcript chunk to Notes")
+                    } catch {
+                        Logger.shared.log("CaptureMode: Failed to append to note: \(error)", level: .error)
+                    }
+                }
+            }
+
+            // Start the continuous session
+            let language = cloudTranscriptionLanguage.isEmpty ? nil : cloudTranscriptionLanguage
+            let prompt = cloudTranscriptionPrompt.isEmpty ? nil : cloudTranscriptionPrompt
+            session.start(language: language, prompt: prompt)
+
+            // Start audio capture — feed data to continuous session
+            recordingState = .recording
+            recordingStartTime = Date()
+            finalText = ""
+            errorMessage = nil
+
+            if showOverlay {
+                overlayPanel?.show(state: .recording)
+            }
+
+            let deviceUID = captureNotesAudioDeviceUID
+
+            do {
+                try audioManager.startCapture(
+                    deviceUID: deviceUID.isEmpty ? nil : deviceUID,
+                    chunkSizeMs: 400
+                ) { [weak session] audioData in
+                    session?.receiveAudio(audioData)
+                }
+                Logger.shared.log("CaptureMode: Audio capture started, feeding to continuous session")
+            } catch {
+                Logger.shared.log("Failed to start audio capture: \(error)", level: .error)
+                audioManager.stopCapture()
+                session.cancel()
+                continuousSession = nil
+                recordingState = .error(error.localizedDescription)
+                overlayPanel?.show(state: .error)
+                isCaptureMode = false
+                captureNoteId = nil
+            }
+
         } catch {
             Logger.shared.log("Failed to create note: \(error)", level: .error)
             errorMessage = "Failed to create note: \(error.localizedDescription)"
@@ -519,17 +596,72 @@ class AppState: ObservableObject {
     func stopCaptureMode() async {
         guard isCaptureMode else { return }
 
-        // Store the note ID before stopping - we need it for the final transcription
-        pendingCaptureNoteId = captureNoteId
+        Logger.shared.log("=== STOPPING CAPTURE MODE ===")
 
-        // Reset capture state early (but keep pendingCaptureNoteId for finalization)
-        isCaptureMode = false
+        let noteId = captureNoteId
+
+        // Keep isCaptureMode true until session is fully stopped,
+        // so the onNewTranscript callback can still append the final chunk to Notes
+        recordingState = .processing
+
+        if showOverlay {
+            overlayPanel?.show(state: .processing)
+        }
+
+        // Stop audio capture
+        audioManager.stopCapture()
+
+        // Stop continuous session — this sends the final chunk and waits
+        if let session = continuousSession {
+            let finalTranscript = await session.stop()
+            finalText = finalTranscript
+
+            // Append any remaining text that the callback didn't get to
+            // (the callback spawns a Task which races with finalization)
+            if let noteId = noteId {
+                if let remainingText = session.stitcher.newTranscriptSinceLastAppend() {
+                    do {
+                        let htmlText = Self.transcriptToHTML(remainingText)
+                        try await notesIntegrationService.appendToNote(noteId: noteId, text: htmlText, isHTML: true)
+                        Logger.shared.log("CaptureMode: Appended final transcript chunk to Notes")
+                    } catch {
+                        Logger.shared.log("CaptureMode: Failed to append final chunk: \(error)", level: .error)
+                    }
+                }
+            }
+
+            // Now safe to mark capture mode as done
+            isCaptureMode = false
+
+            // Finalize the note
+            if let noteId = noteId {
+                do {
+                    try await notesIntegrationService.finalizeNote(noteId: noteId)
+                    Logger.shared.log("CaptureMode: Note finalized")
+                } catch {
+                    Logger.shared.log("CaptureMode: Failed to finalize note: \(error)", level: .error)
+                }
+            }
+        } else {
+            isCaptureMode = false
+        }
+
+        continuousSession = nil
         captureNoteId = nil
+        recordingState = .done
 
-        // Stop the recording - this will trigger final transcription
-        await stopRecording()
+        // Show done overlay
+        if showOverlay {
+            overlayPanel?.show(state: .done, text: "Saved to Notes")
+        }
 
-        // Note: Don't finalize the note here - do it after final transcription in handleFinalTranscription
+        // Auto-hide overlay
+        doneTimer?.invalidate()
+        doneTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.overlayPanel?.hide()
+            }
+        }
     }
 
     func toggleCaptureMode() async {
@@ -539,6 +671,48 @@ class AppState: ObservableObject {
         } else {
             await startCaptureMode()
         }
+    }
+
+    /// Converts timestamped plain text to HTML for Apple Notes
+    private static func transcriptToHTML(_ text: String) -> String {
+        var html = ""
+        let lines = text.components(separatedBy: "\n")
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                continue
+            } else if trimmed == "[pause]" {
+                html += "<p style=\"color:gray;font-size:small;font-style:italic;\">&#8943; pause &#8943;</p>"
+            } else if trimmed == "[transcription gap]" {
+                html += "<p style=\"color:red;font-size:small;font-style:italic;\">&#9888; transcription gap</p>"
+            } else if trimmed.hasPrefix("[") && trimmed.contains("]") {
+                // Line with timestamp: [MM:SS] text...
+                if let closeBracket = trimmed.firstIndex(of: "]") {
+                    let timestamp = String(trimmed[trimmed.startIndex...closeBracket])
+                    let content = String(trimmed[trimmed.index(after: closeBracket)...]).trimmingCharacters(in: .whitespaces)
+                    let safeContent = content
+                        .replacingOccurrences(of: "&", with: "&amp;")
+                        .replacingOccurrences(of: "<", with: "&lt;")
+                        .replacingOccurrences(of: ">", with: "&gt;")
+                    html += "<p><span style=\"color:gray;font-size:small;\">\(timestamp)</span> \(safeContent)</p>"
+                } else {
+                    let safeLine = trimmed
+                        .replacingOccurrences(of: "&", with: "&amp;")
+                        .replacingOccurrences(of: "<", with: "&lt;")
+                        .replacingOccurrences(of: ">", with: "&gt;")
+                    html += "<p>\(safeLine)</p>"
+                }
+            } else {
+                let safeLine = trimmed
+                    .replacingOccurrences(of: "&", with: "&amp;")
+                    .replacingOccurrences(of: "<", with: "&lt;")
+                    .replacingOccurrences(of: ">", with: "&gt;")
+                html += "<p>\(safeLine)</p>"
+            }
+        }
+
+        return html
     }
 
     // MARK: - Transcription Handlers

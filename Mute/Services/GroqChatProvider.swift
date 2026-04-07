@@ -53,7 +53,7 @@ final class GroqChatProvider {
         }
 
         let effectiveTemperature = temperature ?? defaultTemperature
-        let effectiveMaxTokens = maxTokens ?? defaultMaxTokens
+        let effectiveMaxTokens = min(maxTokens ?? defaultMaxTokens, 4096)
 
         // Build request
         var request = URLRequest(url: apiEndpoint)

@@ -98,7 +98,7 @@ enum MaxTokensPreset: Int, CaseIterable, Identifiable {
     case short = 1024       // ~750 words
     case medium = 2048      // ~1500 words
     case long = 4096        // ~3000 words (default)
-    case veryLong = 50000   // Maximum output
+    case veryLong = 6000    // Maximum output (within Groq TPM limits)
 
     var id: Int { rawValue }
 

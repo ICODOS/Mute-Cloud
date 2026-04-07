@@ -100,15 +100,19 @@ final class AudioFileTranscriber {
         // Apply transformation if mode is set and has a transformation
         if let mode = mode, mode.hasTransformation {
             progressHandler?("Transforming...")
-            let transformed = try await groqChatProvider.transform(
-                text: transcription,
-                prompt: mode.prompt,
-                model: mode.modelId,
-                temperature: mode.temperature,
-                maxTokens: mode.maxTokens
-            )
-            Logger.shared.log("AudioFileTranscriber: Transformation complete (\(transformed.count) chars)")
-            return transformed
+            do {
+                let transformed = try await groqChatProvider.transform(
+                    text: transcription,
+                    prompt: mode.prompt,
+                    model: mode.modelId,
+                    temperature: mode.temperature,
+                    maxTokens: mode.maxTokens
+                )
+                Logger.shared.log("AudioFileTranscriber: Transformation complete (\(transformed.count) chars)")
+                return transformed
+            } catch {
+                Logger.shared.log("AudioFileTranscriber: Transformation failed, using raw transcription: \(error)", level: .warning)
+            }
         }
 
         return transcription

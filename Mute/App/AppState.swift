@@ -116,6 +116,8 @@ class AppState: ObservableObject {
 
     // MARK: - Transcription Modes
     let modeManager = TranscriptionModeManager.shared
+    let historyManager = TranscriptionHistoryManager.shared
+    private var pendingRawTranscript: String?
 
     // MARK: - File Transcription State
     @Published var isTranscribingFile: Bool = false
@@ -737,6 +739,14 @@ class AppState: ObservableObject {
 
     /// Applies text transformation using Groq Chat and then completes the transcription
     private func applyTransformationAndComplete(originalText: String, mode: TranscriptionMode) async {
+        // Store raw transcript for history recording
+        pendingRawTranscript = originalText
+
+        // Copy raw transcript to clipboard immediately so clipboard managers
+        // (e.g. Maccy) can capture it while the transformation runs
+        textInsertionService.copyToClipboard(originalText)
+        let rawClipboardTime = Date()
+
         // Update overlay to show transforming
         if showOverlay {
             overlayPanel?.show(state: .processing)
@@ -752,6 +762,17 @@ class AppState: ObservableObject {
                 maxTokens: mode.maxTokens
             )
             Logger.shared.log("Transformation complete: \(transformedText.prefix(100))...")
+
+            // Ensure raw text was on clipboard for at least 3 seconds
+            // so clipboard managers have time to detect it
+            let elapsed = Date().timeIntervalSince(rawClipboardTime)
+            let minimumClipboardTime: TimeInterval = 3.0
+            if elapsed < minimumClipboardTime {
+                let remaining = minimumClipboardTime - elapsed
+                Logger.shared.log("Waiting \(String(format: "%.1f", remaining))s for clipboard manager to capture raw text")
+                try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+            }
+
             completeTranscription(transformedText, wasTransformed: true)
         } catch {
             Logger.shared.log("Transformation failed: \(error)", level: .error)
@@ -825,7 +846,18 @@ class AppState: ObservableObject {
             overlayPanel?.show(state: .done, text: String(text.prefix(60)))
         }
 
+        // Record to history
+        if !text.isEmpty {
+            if wasTransformed, let rawText = pendingRawTranscript {
+                let modeName = modeManager.dictationMode?.name
+                historyManager.addEntry(rawText: rawText, transformedText: text, modeName: modeName)
+            } else {
+                historyManager.addEntry(rawText: text)
+            }
+        }
+
         // Copy to clipboard and optionally paste
+        pendingRawTranscript = nil
         if pasteOnStop {
             textInsertionService.insertText(text, preserveClipboard: preserveClipboard)
         } else {

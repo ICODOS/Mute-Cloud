@@ -14,8 +14,9 @@ enum SettingsTab: Int, Hashable, CaseIterable {
     case general = 0
     case transcription = 1
     case modes = 2
-    case advanced = 3
-    case about = 4
+    case history = 3
+    case advanced = 4
+    case about = 5
 }
 
 struct SettingsView: View {
@@ -41,6 +42,12 @@ struct SettingsView: View {
                     Label("Modes", systemImage: "wand.and.stars")
                 }
                 .tag(SettingsTab.modes)
+
+            HistorySettingsTab()
+                .tabItem {
+                    Label("History", systemImage: "clock.arrow.circlepath")
+                }
+                .tag(SettingsTab.history)
 
             AdvancedSettingsTab()
                 .tabItem {
@@ -1134,6 +1141,125 @@ struct TranscriptionSettingsTab: View {
     private func refreshKeyStatus() {
         hasStoredKey = KeychainManager.shared.hasGroqAPIKey
         maskedKey = KeychainManager.shared.getMaskedGroqAPIKey()
+    }
+}
+
+// MARK: - History Settings Tab
+struct HistorySettingsTab: View {
+    @ObservedObject private var historyManager = TranscriptionHistoryManager.shared
+    @State private var expandedItemId: UUID?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if historyManager.items.isEmpty {
+                    VStack(spacing: 12) {
+                        Spacer()
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 36))
+                            .foregroundColor(.secondary)
+                        Text("No transcriptions yet")
+                            .font(.headline)
+                            .foregroundColor(.secondary)
+                        Text("Your recent transcriptions will appear here.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 300)
+                } else {
+                    ForEach(historyManager.items) { item in
+                        HistoryItemRow(item: item, isExpanded: expandedItemId == item.id)
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    expandedItemId = expandedItemId == item.id ? nil : item.id
+                                }
+                            }
+                    }
+
+                    HStack {
+                        Spacer()
+                        Button(role: .destructive) {
+                            historyManager.clearHistory()
+                        } label: {
+                            Label("Clear History", systemImage: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundColor(.red)
+                    }
+                }
+            }
+            .padding(20)
+        }
+    }
+}
+
+struct HistoryItemRow: View {
+    let item: TranscriptionHistoryItem
+    let isExpanded: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Header
+            HStack {
+                Text(item.date, style: .relative)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                if let modeName = item.modeName {
+                    Text(modeName)
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.15))
+                        .foregroundColor(.accentColor)
+                        .clipShape(Capsule())
+                }
+
+                Spacer()
+
+                Button {
+                    let textToCopy = item.transformedText ?? item.rawText
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(textToCopy, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("Copy to clipboard")
+            }
+
+            // Raw text
+            if item.transformedText != nil {
+                Text("Raw")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+            }
+            Text(item.rawText)
+                .font(.callout)
+                .lineLimit(isExpanded ? nil : 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Transformed text
+            if let transformed = item.transformedText {
+                Divider()
+                Text("Transformed")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+                Text(transformed)
+                    .font(.callout)
+                    .lineLimit(isExpanded ? nil : 2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
     }
 }
 

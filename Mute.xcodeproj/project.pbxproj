@@ -16,12 +16,14 @@
 		3C95D72D5B66669670D7DF9D /* GroqChatProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9E8BA9500D9E2CC7A689937 /* GroqChatProvider.swift */; };
 		3F32AABB9E7A814AC46B238A /* ContinuousTranscriptionSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1D6E070F08816B2B0A50EA /* ContinuousTranscriptionSession.swift */; };
 		44AFC008628CF6696A94CDE4 /* MuteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A22A2FCFFACA3904685D1C6 /* MuteApp.swift */; };
+		4D5220A8EE1D3BEDFB63D2B0 /* TranscriptionHistoryItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 923B645A72A3C8FE8EC971A7 /* TranscriptionHistoryItem.swift */; };
 		53AACCDFF2BD2FD935915007 /* KeychainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF2EEC7FCBC0B2463452D83A /* KeychainManager.swift */; };
 		5C6EA394DCE37E0A0047E5BA /* HotkeyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 839AFB1296483F6572C197BA /* HotkeyService.swift */; };
 		6405578BCF92F61C96225C3B /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C606AACA1E360471045EB567 /* MenuBarView.swift */; };
 		64C8804CB8F639D59F33D118 /* AudioFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F4A5A84651663B20CCDCBA2 /* AudioFileManager.swift */; };
 		689EA065D780B98738734E17 /* TranscriptionMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A68DD08B3028DE450159D4 /* TranscriptionMode.swift */; };
 		72DC2C39EE3E36DDA6CACBC7 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C34804C10F2A80739BD3D345 /* OnboardingView.swift */; };
+		7510E9A0FA22F51B526C86D6 /* TranscriptionHistoryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B390BB4CE8E906EDE8D4ED7C /* TranscriptionHistoryManager.swift */; };
 		88830D6C1EEB0B45E980042F /* TranscriptionModeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 070B5A91E00EC53D225F61F5 /* TranscriptionModeManager.swift */; };
 		8912ABB977DA708981C53531 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0D07FBBA08D18817B94DD9D9 /* Assets.xcassets */; };
 		8EDC04171FD120BD16C66662 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA2EF194CB96FED04F833EE5 /* AppState.swift */; };
@@ -49,9 +51,11 @@
 		7F4A5A84651663B20CCDCBA2 /* AudioFileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioFileManager.swift; sourceTree = "<group>"; };
 		839AFB1296483F6572C197BA /* HotkeyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyService.swift; sourceTree = "<group>"; };
 		8826DF86EE0096B3513EBB85 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		923B645A72A3C8FE8EC971A7 /* TranscriptionHistoryItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionHistoryItem.swift; sourceTree = "<group>"; };
 		9A22A2FCFFACA3904685D1C6 /* MuteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MuteApp.swift; sourceTree = "<group>"; };
 		A1DB46C26894F83997C99660 /* TranscriptionProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionProvider.swift; sourceTree = "<group>"; };
 		ADFB2D2D7F40C6B3D1762DF9 /* GroqWhisperProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroqWhisperProvider.swift; sourceTree = "<group>"; };
+		B390BB4CE8E906EDE8D4ED7C /* TranscriptionHistoryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionHistoryManager.swift; sourceTree = "<group>"; };
 		B61C055E2E0AEE518F14A6DB /* GroqVerboseResponse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroqVerboseResponse.swift; sourceTree = "<group>"; };
 		B9E8BA9500D9E2CC7A689937 /* GroqChatProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroqChatProvider.swift; sourceTree = "<group>"; };
 		BA2EF194CB96FED04F833EE5 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
@@ -94,6 +98,7 @@
 			isa = PBXGroup;
 			children = (
 				B61C055E2E0AEE518F14A6DB /* GroqVerboseResponse.swift */,
+				923B645A72A3C8FE8EC971A7 /* TranscriptionHistoryItem.swift */,
 				64A68DD08B3028DE450159D4 /* TranscriptionMode.swift */,
 			);
 			path = Models;
@@ -138,6 +143,7 @@
 				78E0703A3EDFCA963F8B1AC7 /* NotesIntegrationService.swift */,
 				41A7AFAF5368EA935A9DEBFE /* PermissionManager.swift */,
 				BD629601D79B18AE56A4475A /* TextInsertionService.swift */,
+				B390BB4CE8E906EDE8D4ED7C /* TranscriptionHistoryManager.swift */,
 				070B5A91E00EC53D225F61F5 /* TranscriptionModeManager.swift */,
 				A1DB46C26894F83997C99660 /* TranscriptionProvider.swift */,
 				CE200313BE75ABA694D329B6 /* TranscriptStitcher.swift */,
@@ -268,6 +274,8 @@
 				17BC1D60B968DEF53C1F654E /* SettingsView.swift in Sources */,
 				D5CEACBED3623E1F93B25892 /* TextInsertionService.swift in Sources */,
 				99B487A7C12A3D01EB3DB9B9 /* TranscriptStitcher.swift in Sources */,
+				4D5220A8EE1D3BEDFB63D2B0 /* TranscriptionHistoryItem.swift in Sources */,
+				7510E9A0FA22F51B526C86D6 /* TranscriptionHistoryManager.swift in Sources */,
 				689EA065D780B98738734E17 /* TranscriptionMode.swift in Sources */,
 				88830D6C1EEB0B45E980042F /* TranscriptionModeManager.swift in Sources */,
 				012128C9CCD53381CB7EDD52 /* TranscriptionProvider.swift in Sources */,
